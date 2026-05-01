@@ -1,6 +1,6 @@
 {
-  "milestone": "pi-event-forwarder-test-pass",
-  "updatedAt": "2026-05-01T17:00:00Z",
+  "milestone": "image-mime-fix",
+  "updatedAt": "2026-05-01T17:30:00Z",
   "completed": [
     "multi-session foundation",
     "group-topic support",
@@ -25,7 +25,8 @@
     "access-flow-tests",
     "bridge-core-process-tests",
     "pi-event-forwarder-tests",
-    "pi-exit-notification-test"
+    "pi-exit-notification-test",
+    "telegram-photo-mime-fallback"
   ],
   "pending": [
     {

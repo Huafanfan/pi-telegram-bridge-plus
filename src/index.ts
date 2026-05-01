@@ -13,6 +13,7 @@ import { approvePairingRecord, createPairingCode, normalizePairingStore, prunePa
 import { createWebhookServer, normalizePath } from './webhook-server.js';
 import { accessDecision, isRuntimeAllowed, isRuntimeOwner } from './access-flow.js';
 import { forwardPiError, forwardPiEvent, forwardPiExit, forwardPiStderr } from './pi-event-forwarder.js';
+import { imageMimeForTelegramPhoto } from './mime.js';
 import { PiRpcClient, type PiRpcEvent } from './pi-rpc.js';
 import { displayProject, ensureProjectDirectory, resolveProjectPath } from './project.js';
 import { resolveOutboundMediaFiles, stripMediaMarkers, type OutboundMediaFile } from './outbound-media.js';
@@ -720,7 +721,7 @@ function shouldProcessText(ctx: Context, text: string): boolean {
   });
 }
 
-async function fetchTelegramFile(fileId: string, maxBytes: number): Promise<{ data: Buffer; mimeType: string }> {
+async function fetchTelegramFile(fileId: string, maxBytes: number): Promise<{ data: Buffer; mimeType: string; filePath?: string }> {
   const file = await bot.api.getFile(fileId);
   if (!file.file_path) throw new Error('Telegram file path is missing');
   const fileRoot = config.TELEGRAM_FILE_API_ROOT.replace(/\/$/, '');
@@ -731,7 +732,7 @@ async function fetchTelegramFile(fileId: string, maxBytes: number): Promise<{ da
   if (Number.isFinite(length) && length > maxBytes) throw new Error(`File too large (${length} bytes)`);
   const arrayBuffer = await response.arrayBuffer();
   if (arrayBuffer.byteLength > maxBytes) throw new Error(`File too large (${arrayBuffer.byteLength} bytes)`);
-  return { data: Buffer.from(arrayBuffer), mimeType: response.headers.get('content-type') ?? 'application/octet-stream' };
+  return { data: Buffer.from(arrayBuffer), mimeType: response.headers.get('content-type') ?? 'application/octet-stream', filePath: file.file_path };
 }
 
 async function imageFromPhoto(message: Message): Promise<{ image: RpcImage; bytes: number }> {
@@ -739,7 +740,8 @@ async function imageFromPhoto(message: Message): Promise<{ image: RpcImage; byte
   if (!photo) throw new Error('Missing photo');
   if (photo.file_size && photo.file_size > config.MAX_IMAGE_BYTES) throw new Error(`Image too large (${photo.file_size} bytes)`);
   const file = await fetchTelegramFile(photo.file_id, config.MAX_IMAGE_BYTES);
-  return { image: { type: 'image', data: file.data.toString('base64'), mimeType: file.mimeType || 'image/jpeg' }, bytes: file.data.byteLength };
+  const mimeType = imageMimeForTelegramPhoto({ headerMime: file.mimeType, filePath: file.filePath, data: file.data });
+  return { image: { type: 'image', data: file.data.toString('base64'), mimeType }, bytes: file.data.byteLength };
 }
 
 function albumKey(ctx: Context): string {
