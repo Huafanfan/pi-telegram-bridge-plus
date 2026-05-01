@@ -1,0 +1,45 @@
+{
+  "milestone": "post-github-hardening",
+  "updatedAt": "2026-05-01T14:10:00Z",
+  "completed": [
+    "multi-session foundation",
+    "group-topic support",
+    "permission model",
+    "message-edit streaming",
+    "media input",
+    "session cleanup",
+    "send retry",
+    "outbound media MVP",
+    "diagnostics command",
+    "basic tests",
+    "logic-modules-tests"
+  ],
+  "pending": [
+    {
+      "id": "healthcheck",
+      "title": "Optional HTTP healthcheck endpoint",
+      "status": "pending"
+    },
+    {
+      "id": "webhook-mode",
+      "title": "Optional Telegram webhook transport",
+      "status": "pending"
+    },
+    {
+      "id": "proxy-api-root",
+      "title": "Explicit Telegram proxy/API root support",
+      "status": "pending"
+    },
+    {
+      "id": "dynamic-pairing",
+      "title": "Dynamic pairing and local allowlist management",
+      "status": "pending"
+    },
+    {
+      "id": "approval-ui",
+      "title": "Per-tool approval UI if pi RPC supports it",
+      "status": "blocked-pi-rpc-research"
+    }
+  ],
+  "failed": []
+}

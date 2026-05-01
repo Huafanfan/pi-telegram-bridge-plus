@@ -356,11 +356,12 @@ Acceptance criteria:
 
 - [x] `project.ts`: path resolution remains workspace-safe.
 - [x] `telegram-format.ts`: split/escape/truncate behavior.
-- [ ] session key derivation for private/group/topic messages.
-- [ ] permission checks for users/groups/owners/approvers.
-- [ ] mention stripping and group trigger detection.
+- [x] session key derivation for private/group/topic messages.
+- [x] permission checks for users/groups/owners/approvers.
+- [x] mention stripping and group trigger detection.
 - [ ] media group batching logic.
 - [x] `outbound-media.ts`: MEDIA marker extraction, workspace allowlist, size checks, and media type classification.
+- [x] `telegram-routing.ts`: session keys, thread params, access checks, owner legacy compatibility, mention stripping, and group trigger detection.
 
 ### Integration tests with mocked Telegram/pi
 
@@ -435,7 +436,7 @@ Completed in this pass:
 - Telegram send retry/backoff for 429 `retry_after`, 5xx, and transient send/network errors.
 - Actionable 409 polling conflict log when another process uses the same bot token.
 - Outbound local file/media delivery MVP via `MEDIA:/absolute/path` markers under `WORKSPACE_ROOT`.
-- Unit tests for `project.ts`, `telegram-format.ts`, and `outbound-media.ts`.
+- Unit tests for `project.ts`, `telegram-format.ts`, `outbound-media.ts`, and `telegram-routing.ts`.
 - Updated `.env.example` and `README.md`.
 - Verified with `npm test`, `npm run typecheck`, and `npm run build`.
 

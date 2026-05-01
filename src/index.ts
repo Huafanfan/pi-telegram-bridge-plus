@@ -9,13 +9,23 @@ import { PiRpcClient, type PiRpcEvent } from './pi-rpc.js';
 import { displayProject, ensureProjectDirectory, resolveProjectPath } from './project.js';
 import { resolveOutboundMediaFiles, stripMediaMarkers, type OutboundMediaFile } from './outbound-media.js';
 import { escapeHtml, formatToolArgs, markdownToTelegramHtml, splitForTelegram, truncateMiddle } from './telegram-format.js';
+import {
+  isAllowed as isAllowedByPolicy,
+  isOwnerUser as isOwnerUserByPolicy,
+  messageThreadId,
+  sessionKeyFor,
+  shouldProcessText as shouldProcessTextByPolicy,
+  stripBotMention as stripBotMentionByPolicy,
+  threadParams,
+  isGroupChatType,
+  type AccessPolicy,
+} from './telegram-routing.js';
 
 const execFileAsync = promisify(execFile);
 const config = loadConfig();
 const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
 
 const MAX_TELEGRAM_API_CHARS = 4096;
-const GENERAL_TOPIC_THREAD_ID = 1;
 
 type RpcImage = { type: 'image'; data: string; mimeType: string };
 
@@ -58,27 +68,17 @@ const startedAt = Date.now();
 let idleSweepTimer: NodeJS.Timeout | null = null;
 let shuttingDown = false;
 
-function isGroupChatType(type?: string): boolean {
-  return type === 'group' || type === 'supergroup';
-}
-
-function messageThreadId(message: Message | undefined): number | undefined {
-  const id = (message as { message_thread_id?: unknown } | undefined)?.message_thread_id;
-  return typeof id === 'number' ? id : undefined;
-}
-
 function contextThreadId(ctx: Context): number | undefined {
   return messageThreadId(ctx.message ?? ctx.callbackQuery?.message);
 }
 
-function threadParams(threadId: number | undefined): { message_thread_id?: number } {
-  // Telegram rejects message_thread_id=1 for sends in some general-topic contexts.
-  return threadId && threadId !== GENERAL_TOPIC_THREAD_ID ? { message_thread_id: threadId } : {};
-}
-
-function sessionKeyFor(chatId: number, isGroup: boolean, threadId?: number): string {
-  if (isGroup) return `telegram:group:${chatId}${threadId ? `:topic:${threadId}` : ''}`;
-  return `telegram:chat:${chatId}${threadId ? `:topic:${threadId}` : ''}`;
+function accessPolicy(): AccessPolicy {
+  return {
+    allowedChatIds: config.allowedChatIds,
+    allowedUserIds: config.allowedUserIds,
+    allowedGroupIds: config.allowedGroupIds,
+    ownerUserIds: config.ownerUserIds,
+  };
 }
 
 function controlsKeyboard(): InlineKeyboard | undefined {
@@ -95,33 +95,12 @@ function controlMarkup(): { reply_markup?: InlineKeyboard } {
   return keyboard ? { reply_markup: keyboard } : {};
 }
 
-function canUseLegacyChatAllowlist(chatId: number): boolean {
-  return config.allowedChatIds.has(chatId);
-}
-
 function isOwnerUser(userId?: number): boolean {
-  if (typeof userId !== 'number') return false;
-  return config.ownerUserIds.has(userId) || config.allowedChatIds.has(userId);
-}
-
-function isAllowedUser(userId?: number): boolean {
-  return typeof userId === 'number' && (config.allowedUserIds.has(userId) || config.ownerUserIds.has(userId));
-}
-
-function isAllowedGroup(chatId?: number): boolean {
-  return typeof chatId === 'number' && (config.allowedGroupIds.has(chatId) || config.allowedChatIds.has(chatId));
+  return isOwnerUserByPolicy(accessPolicy(), userId);
 }
 
 function isAllowed(ctx: Context): boolean {
-  const chat = ctx.chat;
-  if (!chat) return false;
-  const userId = ctx.from?.id;
-  if (isGroupChatType(chat.type)) {
-    if (!isAllowedGroup(chat.id)) return false;
-    if (config.allowedUserIds.size === 0 && config.ownerUserIds.size === 0) return true;
-    return isAllowedUser(userId);
-  }
-  return canUseLegacyChatAllowlist(chat.id) || isAllowedUser(userId);
+  return isAllowedByPolicy(accessPolicy(), ctx.chat, ctx.from?.id);
 }
 
 function replyParams(ctx: Context): { message_thread_id?: number } {
@@ -687,33 +666,18 @@ async function sendPromptToPi(ctx: Context, text: string, images?: RpcImage[]): 
 }
 
 function stripBotMention(text: string): string {
-  let out = text;
-  for (const username of botUsernames) {
-    out = out.replace(new RegExp(`@${username}\\b`, 'gi'), '').trim();
-  }
-  return out;
-}
-
-function isReplyToBot(message: Message): boolean {
-  const username = message.reply_to_message?.from?.username;
-  return Boolean(username && botUsernames.has(username.toLowerCase()));
-}
-
-function isBotMentioned(text: string): boolean {
-  const lower = text.toLowerCase();
-  for (const username of botUsernames) {
-    if (lower.includes(`@${username}`)) return true;
-  }
-  return config.mentionPatterns.some((pattern) => pattern.test(text));
+  return stripBotMentionByPolicy(text, botUsernames);
 }
 
 function shouldProcessText(ctx: Context, text: string): boolean {
-  const chat = ctx.chat;
-  if (!chat || !isGroupChatType(chat.type)) return true;
-  if (!config.TELEGRAM_GROUP_REQUIRE_MENTION) return true;
-  if (text.startsWith('/')) return true;
-  if (ctx.message && isReplyToBot(ctx.message)) return true;
-  return isBotMentioned(text);
+  return shouldProcessTextByPolicy({
+    chat: ctx.chat,
+    message: ctx.message,
+    text,
+    requireMention: config.TELEGRAM_GROUP_REQUIRE_MENTION,
+    botUsernames,
+    mentionPatterns: config.mentionPatterns,
+  });
 }
 
 async function fetchTelegramFile(fileId: string, maxBytes: number): Promise<{ data: Buffer; mimeType: string }> {
