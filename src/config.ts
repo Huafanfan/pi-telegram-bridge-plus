@@ -31,6 +31,11 @@ const schema = z.object({
   TELEGRAM_ENABLE_TYPING: boolFromEnv.default(true),
   TELEGRAM_SEND_RETRIES: z.coerce.number().int().nonnegative().default(3),
   TELEGRAM_SEND_RETRY_BASE_MS: z.coerce.number().int().positive().default(750),
+  TELEGRAM_API_ROOT: z.string().default('https://api.telegram.org'),
+  TELEGRAM_FILE_API_ROOT: z.string().default('https://api.telegram.org/file'),
+  TELEGRAM_PAIRING_ENABLED: boolFromEnv.default(false),
+  TELEGRAM_PAIRING_FILE: z.string().default('.telegram-pairing.json'),
+  TELEGRAM_PAIRING_CODE_TTL_MS: z.coerce.number().int().positive().default(10 * 60_000),
 
   WORKSPACE_ROOT: z.string().default(process.cwd()),
   PI_BIN: z.string().default('pi'),
@@ -61,6 +66,14 @@ const schema = z.object({
   HEALTHCHECK_HOST: z.string().default('127.0.0.1'),
   HEALTHCHECK_PORT: z.coerce.number().int().nonnegative().default(0),
   HEALTHCHECK_PATH: z.string().default('/healthz'),
+
+  // Optional webhook mode. Long polling remains the default when TELEGRAM_WEBHOOK_URL is empty.
+  TELEGRAM_WEBHOOK_URL: z.string().default(''),
+  TELEGRAM_WEBHOOK_SECRET: z.string().default(''),
+  TELEGRAM_WEBHOOK_HOST: z.string().default('127.0.0.1'),
+  TELEGRAM_WEBHOOK_PORT: z.coerce.number().int().nonnegative().default(0),
+  TELEGRAM_WEBHOOK_PATH: z.string().default('/telegram/webhook'),
+  TELEGRAM_WEBHOOK_MAX_BODY_BYTES: z.coerce.number().int().positive().default(2_000_000),
 
   // Optional command hook. The downloaded voice file path is appended as the last arg.
   // Example: VOICE_TRANSCRIBE_CMD='whisper-cli --model base --file'

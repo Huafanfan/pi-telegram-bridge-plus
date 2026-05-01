@@ -1,6 +1,6 @@
 {
-  "milestone": "post-github-hardening",
-  "updatedAt": "2026-05-01T14:25:00Z",
+  "milestone": "feature-completion-pass",
+  "updatedAt": "2026-05-01T15:00:00Z",
   "completed": [
     "multi-session foundation",
     "group-topic support",
@@ -13,28 +13,26 @@
     "diagnostics command",
     "basic tests",
     "logic-modules-tests",
-    "healthcheck"
+    "healthcheck",
+    "telegram-api-root",
+    "dynamic-pairing",
+    "webhook-mode"
   ],
   "pending": [
     {
-      "id": "webhook-mode",
-      "title": "Optional Telegram webhook transport",
-      "status": "pending"
-    },
-    {
-      "id": "proxy-api-root",
-      "title": "Explicit Telegram proxy/API root support",
-      "status": "pending"
-    },
-    {
-      "id": "dynamic-pairing",
-      "title": "Dynamic pairing and local allowlist management",
+      "id": "telegram-proxy-agent",
+      "title": "Explicit TELEGRAM_PROXY agent support beyond inherited standard proxy env",
       "status": "pending"
     },
     {
       "id": "approval-ui",
       "title": "Per-tool approval UI if pi RPC supports it",
       "status": "blocked-pi-rpc-research"
+    },
+    {
+      "id": "integration-tests",
+      "title": "Mocked Telegram/pi integration tests",
+      "status": "pending"
     }
   ],
   "failed": []

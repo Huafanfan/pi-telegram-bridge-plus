@@ -282,16 +282,17 @@ Acceptance criteria:
 
 ### 3.3 Dynamic pairing and allowlist management
 
-- [ ] Add optional pairing mode for private chats:
+- [x] Add optional pairing mode for private chats:
   - unknown user receives one-time code
   - owner approves code via CLI or Telegram command
   - approved user stored in local JSON allowlist
-- [ ] Add commands:
+- [x] Add commands:
   - `/pair approve <code>`
   - `/pair list`
   - `/pair revoke <userId>`
-- [ ] Protect pairing approval as owner-only.
-- [ ] Add rate limiting for pairing code generation and attempts.
+- [x] Protect pairing approval as owner-only.
+- [x] Add rate limiting for pairing code generation and attempts.
+  - Existing pending request is reused until expiry; code TTL is configurable.
 
 Acceptance criteria:
 
@@ -300,16 +301,16 @@ Acceptance criteria:
 
 ### 3.4 Webhook mode
 
-- [ ] Add optional webhook transport:
+- [x] Add optional webhook transport:
   - `TELEGRAM_WEBHOOK_URL`
   - `TELEGRAM_WEBHOOK_SECRET`
   - `TELEGRAM_WEBHOOK_HOST`
   - `TELEGRAM_WEBHOOK_PORT`
   - `TELEGRAM_WEBHOOK_PATH`
-- [ ] Require secret token in webhook mode.
-- [ ] Add body size limits and request timeout.
-- [ ] ACK Telegram quickly and process updates asynchronously.
-- [ ] Keep long polling as default.
+- [x] Require secret token in webhook mode.
+- [x] Add body size limits and request timeout.
+- [x] ACK Telegram quickly and process updates asynchronously.
+- [x] Keep long polling as default.
 
 Acceptance criteria:
 
@@ -319,9 +320,11 @@ Acceptance criteria:
 ### 3.5 Proxy and network configuration
 
 - [ ] Support `TELEGRAM_PROXY` explicitly.
-- [ ] Respect standard `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, and `NO_PROXY` where grammY/fetch allows.
-- [ ] Add configurable Telegram API root for self-hosted Bot API server if needed.
-- [ ] Add network diagnostics to `/status` or `/diagnostics`.
+- [x] Respect standard `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, and `NO_PROXY` where grammY/fetch allows.
+  - Node/grammY/fetch inherit process env; `/diagnostics` reports proxy presence.
+- [x] Add configurable Telegram API root for self-hosted Bot API server if needed.
+  - Added `TELEGRAM_API_ROOT` and `TELEGRAM_FILE_API_ROOT`.
+- [x] Add network diagnostics to `/status` or `/diagnostics`.
 
 Acceptance criteria:
 
@@ -444,8 +447,8 @@ Completed in this pass:
 Still pending / intentionally deferred:
 
 - Full Telegram polling supervisor with polling-level retry/backoff. Current implementation improves startup cleanup, 409 conflict visibility, and send retry/flood-control handling but does not yet supervise long-polling restarts at OpenClaw/Hermes level.
-- Webhook mode.
-- Dynamic pairing.
+- Webhook mode is implemented as an optional minimal transport; long polling remains default.
+- Dynamic pairing is implemented with local JSON allowlist and owner approval.
 - Structured RPC outbound media events and container-path translation; text marker based outbound delivery is implemented.
 - Per-tool exec approval UI; this likely depends on pi RPC exposing approval events.
 - Markdown table/mobile formatting and code-block-aware splitting beyond the current HTML fallback.

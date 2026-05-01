@@ -2,6 +2,8 @@
 import { Bot, GrammyError, HttpError, InlineKeyboard, InputFile, type Context } from 'grammy';
 import type { Message, ReactionTypeEmoji } from 'grammy/types';
 import path from 'node:path';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import http, { type Server } from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -24,7 +26,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const config = loadConfig();
-const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
+const bot = new Bot(config.TELEGRAM_BOT_TOKEN, { client: { apiRoot: config.TELEGRAM_API_ROOT } });
 
 const MAX_TELEGRAM_API_CHARS = 4096;
 
@@ -62,12 +64,30 @@ type AlbumEntry = {
   totalBytes: number;
 };
 
+type PairingRecord = {
+  code: string;
+  userId: number;
+  chatId: number;
+  username?: string;
+  firstName?: string;
+  createdAt: number;
+  expiresAt: number;
+};
+
+type PairingStore = {
+  allowedUserIds: number[];
+  pending: PairingRecord[];
+};
+
 const sessions = new Map<string, SessionState>();
 const albums = new Map<string, AlbumEntry>();
 const botUsernames = new Set<string>();
+const runtimeAllowedUserIds = new Set<number>();
+const pendingPairing = new Map<string, PairingRecord>();
 const startedAt = Date.now();
 let idleSweepTimer: NodeJS.Timeout | null = null;
 let healthServer: Server | null = null;
+let webhookServer: Server | null = null;
 let shuttingDown = false;
 
 function contextThreadId(ctx: Context): number | undefined {
@@ -102,6 +122,7 @@ function isOwnerUser(userId?: number): boolean {
 }
 
 function isAllowed(ctx: Context): boolean {
+  if (typeof ctx.from?.id === 'number' && runtimeAllowedUserIds.has(ctx.from.id)) return true;
   return isAllowedByPolicy(accessPolicy(), ctx.chat, ctx.from?.id);
 }
 
@@ -115,7 +136,8 @@ function replyText(ctx: Context, text: string): void {
 
 function requireAllowed(ctx: Context): boolean {
   if (isAllowed(ctx)) return true;
-  replyText(ctx, 'Unauthorized. Ask the bridge owner to add your Telegram user/chat id to the allowlist.');
+  const suffix = config.TELEGRAM_PAIRING_ENABLED ? ' You can send /pair to request access.' : '';
+  replyText(ctx, `Unauthorized. Ask the bridge owner to add your Telegram user/chat id to the allowlist.${suffix}`);
   return false;
 }
 
@@ -156,6 +178,84 @@ function closeSession(key: string): boolean {
   stopSession(session);
   sessions.delete(key);
   return true;
+}
+
+function pairingFilePath(): string {
+  return path.isAbsolute(config.TELEGRAM_PAIRING_FILE) ? config.TELEGRAM_PAIRING_FILE : path.resolve(process.cwd(), config.TELEGRAM_PAIRING_FILE);
+}
+
+function loadPairingStore(): PairingStore {
+  try {
+    const raw = JSON.parse(fs.readFileSync(pairingFilePath(), 'utf8')) as Partial<PairingStore>;
+    return {
+      allowedUserIds: Array.isArray(raw.allowedUserIds) ? raw.allowedUserIds.filter((id): id is number => typeof id === 'number') : [],
+      pending: Array.isArray(raw.pending) ? raw.pending.filter((item): item is PairingRecord => typeof item === 'object' && item !== null && typeof item.code === 'string' && typeof item.userId === 'number') : [],
+    };
+  } catch {
+    return { allowedUserIds: [], pending: [] };
+  }
+}
+
+function savePairingStore(store: PairingStore): void {
+  const filePath = pairingFilePath();
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(store, null, 2)}\n`);
+}
+
+function loadRuntimeAllowlist(): void {
+  const store = loadPairingStore();
+  runtimeAllowedUserIds.clear();
+  for (const id of store.allowedUserIds) runtimeAllowedUserIds.add(id);
+}
+
+function pruneExpiredPairings(now = Date.now()): void {
+  for (const [code, record] of pendingPairing.entries()) {
+    if (record.expiresAt <= now) pendingPairing.delete(code);
+  }
+}
+
+function createPairingRequest(ctx: Context): PairingRecord {
+  if (!ctx.chat || !ctx.from) throw new Error('Missing chat/from');
+  pruneExpiredPairings();
+  for (const existing of pendingPairing.values()) {
+    if (existing.userId === ctx.from.id) return existing;
+  }
+  const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+  const now = Date.now();
+  const record: PairingRecord = {
+    code,
+    userId: ctx.from.id,
+    chatId: ctx.chat.id,
+    username: ctx.from.username,
+    firstName: ctx.from.first_name,
+    createdAt: now,
+    expiresAt: now + config.TELEGRAM_PAIRING_CODE_TTL_MS,
+  };
+  pendingPairing.set(code, record);
+  return record;
+}
+
+function approvePairing(code: string): PairingRecord | undefined {
+  pruneExpiredPairings();
+  const normalized = code.trim().toUpperCase();
+  const record = pendingPairing.get(normalized);
+  if (!record) return undefined;
+  const store = loadPairingStore();
+  store.allowedUserIds = [...new Set([...store.allowedUserIds, record.userId])];
+  store.pending = store.pending.filter((item) => item.code !== normalized);
+  savePairingStore(store);
+  runtimeAllowedUserIds.add(record.userId);
+  pendingPairing.delete(normalized);
+  return record;
+}
+
+function revokePairedUser(userId: number): boolean {
+  const store = loadPairingStore();
+  const before = store.allowedUserIds.length;
+  store.allowedUserIds = store.allowedUserIds.filter((id) => id !== userId);
+  savePairingStore(store);
+  runtimeAllowedUserIds.delete(userId);
+  return store.allowedUserIds.length !== before;
 }
 
 function getOrCreateSession(ctx: Context): SessionState {
@@ -469,7 +569,7 @@ async function sendDiagnostics(session: SessionState): Promise<void> {
   const diagnostics = {
     bot: {
       usernames: [...botUsernames],
-      transport: 'long_polling',
+      transport: isWebhookMode() ? 'webhook' : 'long_polling',
       uptimeMs: Date.now() - startedAt,
     },
     config: {
@@ -483,6 +583,8 @@ async function sendDiagnostics(session: SessionState): Promise<void> {
       sessionIdleTimeoutMs: config.SESSION_IDLE_TIMEOUT_MS,
       healthcheck: config.HEALTHCHECK_PORT > 0 ? `${config.HEALTHCHECK_HOST}:${config.HEALTHCHECK_PORT}${config.HEALTHCHECK_PATH}` : 'disabled',
       sendRetries: config.TELEGRAM_SEND_RETRIES,
+      telegramApiRoot: config.TELEGRAM_API_ROOT,
+      telegramFileApiRoot: config.TELEGRAM_FILE_API_ROOT,
       proxy: {
         HTTPS_PROXY: envEnabled('HTTPS_PROXY'),
         HTTP_PROXY: envEnabled('HTTP_PROXY'),
@@ -522,7 +624,7 @@ async function sendStatus(session: SessionState): Promise<void> {
     piRunning: session.pi.isRunning,
     activeSessions: sessions.size,
     uptimeMs: Date.now() - startedAt,
-    transport: 'long_polling',
+    transport: isWebhookMode() ? 'webhook' : 'long_polling',
     lastActivityAt: new Date(session.lastActivityAt).toISOString(),
     lastError: session.lastError,
   };
@@ -685,7 +787,9 @@ function shouldProcessText(ctx: Context, text: string): boolean {
 
 async function fetchTelegramFile(fileId: string, maxBytes: number): Promise<{ data: Buffer; mimeType: string }> {
   const file = await bot.api.getFile(fileId);
-  const url = `https://api.telegram.org/file/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+  if (!file.file_path) throw new Error('Telegram file path is missing');
+  const fileRoot = config.TELEGRAM_FILE_API_ROOT.replace(/\/$/, '');
+  const url = `${fileRoot}/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
   const length = Number(response.headers.get('content-length'));
@@ -813,7 +917,7 @@ function healthPayload(): Record<string, unknown> {
   const sessionsList = [...sessions.values()];
   return {
     ok: true,
-    transport: 'long_polling',
+    transport: isWebhookMode() ? 'webhook' : 'long_polling',
     uptimeMs: Date.now() - startedAt,
     botUsernames: [...botUsernames],
     activeSessions: sessionsList.length,
@@ -825,9 +929,13 @@ function healthPayload(): Record<string, unknown> {
   };
 }
 
+function normalizePath(value: string): string {
+  return value.startsWith('/') ? value : `/${value}`;
+}
+
 function startHealthcheckServer(): void {
   if (config.HEALTHCHECK_PORT <= 0 || healthServer) return;
-  const healthPath = config.HEALTHCHECK_PATH.startsWith('/') ? config.HEALTHCHECK_PATH : `/${config.HEALTHCHECK_PATH}`;
+  const healthPath = normalizePath(config.HEALTHCHECK_PATH);
   healthServer = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (req.method !== 'GET' || url.pathname !== healthPath) {
@@ -851,6 +959,68 @@ async function stopHealthcheckServer(): Promise<void> {
   if (!healthServer) return;
   const server = healthServer;
   healthServer = null;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+function isWebhookMode(): boolean {
+  return Boolean(config.TELEGRAM_WEBHOOK_URL.trim());
+}
+
+function startWebhookServer(): void {
+  if (!isWebhookMode() || webhookServer) return;
+  if (config.TELEGRAM_WEBHOOK_PORT <= 0) throw new Error('TELEGRAM_WEBHOOK_PORT must be positive in webhook mode');
+  if (!config.TELEGRAM_WEBHOOK_SECRET.trim()) throw new Error('TELEGRAM_WEBHOOK_SECRET is required in webhook mode');
+  const webhookPath = normalizePath(config.TELEGRAM_WEBHOOK_PATH);
+
+  webhookServer = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (req.method !== 'POST' || url.pathname !== webhookPath) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'not_found' }));
+      return;
+    }
+    if (req.headers['x-telegram-bot-api-secret-token'] !== config.TELEGRAM_WEBHOOK_SECRET) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+      return;
+    }
+
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.byteLength;
+      if (size > config.TELEGRAM_WEBHOOK_MAX_BODY_BYTES) {
+        res.writeHead(413, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'payload_too_large' }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      try {
+        const update = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        void bot.handleUpdate(update).catch(console.error);
+      } catch (error) {
+        console.error(`Invalid webhook update: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+  });
+
+  webhookServer.listen(config.TELEGRAM_WEBHOOK_PORT, config.TELEGRAM_WEBHOOK_HOST, () => {
+    console.log(`Webhook listening on http://${config.TELEGRAM_WEBHOOK_HOST}:${config.TELEGRAM_WEBHOOK_PORT}${webhookPath}`);
+  });
+  webhookServer.on('error', (error) => {
+    console.error(`Webhook server error: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
+
+async function stopWebhookServer(): Promise<void> {
+  if (!webhookServer) return;
+  const server = webhookServer;
+  webhookServer = null;
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
@@ -887,6 +1057,62 @@ bot.command(['start', 'help'], async (ctx) => {
     ].join('\n'),
     { ...controlMarkup(), ...replyParams(ctx) },
   );
+});
+
+bot.command('pair', async (ctx) => {
+  const match = ctx.match.trim();
+  const [action, value] = match.split(/\s+/).filter(Boolean);
+
+  if (!action || action === 'request') {
+    if (!config.TELEGRAM_PAIRING_ENABLED) {
+      await ctx.reply('Pairing is disabled. Ask the bridge owner to configure TELEGRAM_PAIRING_ENABLED=true.', replyParams(ctx));
+      return;
+    }
+    if (isAllowed(ctx)) {
+      await ctx.reply('You are already allowed to use this bridge.', replyParams(ctx));
+      return;
+    }
+    const record = createPairingRequest(ctx);
+    await ctx.reply(`Pairing request created. Send this code to the bridge owner: ${record.code}\nExpires: ${new Date(record.expiresAt).toISOString()}`, replyParams(ctx));
+    return;
+  }
+
+  if (!requireAllowed(ctx) || !requireOwner(ctx)) return;
+
+  if (action === 'approve') {
+    if (!value) {
+      await ctx.reply('Usage: /pair approve <code>', replyParams(ctx));
+      return;
+    }
+    const record = approvePairing(value);
+    await ctx.reply(record ? `Approved user ${record.userId}${record.username ? ` (@${record.username})` : ''}.` : 'Pairing code not found or expired.', replyParams(ctx));
+    return;
+  }
+
+  if (action === 'list') {
+    pruneExpiredPairings();
+    const store = loadPairingStore();
+    const summary = {
+      enabled: config.TELEGRAM_PAIRING_ENABLED,
+      file: pairingFilePath(),
+      allowedUserIds: store.allowedUserIds,
+      pending: [...pendingPairing.values()].map((item) => ({ code: item.code, userId: item.userId, username: item.username, expiresAt: new Date(item.expiresAt).toISOString() })),
+    };
+    await sendTelegramMessage(ctx.chat!.id, `<b>Pairing</b>\n<code>${escapeHtml(JSON.stringify(summary, null, 2))}</code>`, { threadId: contextThreadId(ctx) });
+    return;
+  }
+
+  if (action === 'revoke') {
+    const userId = Number(value);
+    if (!Number.isFinite(userId)) {
+      await ctx.reply('Usage: /pair revoke <userId>', replyParams(ctx));
+      return;
+    }
+    await ctx.reply(revokePairedUser(userId) ? `Revoked paired user ${userId}.` : `User ${userId} was not in the paired allowlist.`, replyParams(ctx));
+    return;
+  }
+
+  await ctx.reply('Usage: /pair [request] | /pair approve <code> | /pair list | /pair revoke <userId>', replyParams(ctx));
 });
 
 bot.command('project', async (ctx) => {
@@ -1130,6 +1356,7 @@ async function shutdown(): Promise<void> {
     idleSweepTimer = null;
   }
   await stopHealthcheckServer();
+  await stopWebhookServer();
   for (const album of albums.values()) clearTimeout(album.timer);
   albums.clear();
   for (const session of sessions.values()) stopSession(session);
@@ -1140,11 +1367,20 @@ async function shutdown(): Promise<void> {
 process.once('SIGINT', () => void shutdown().finally(() => process.exit(0)));
 process.once('SIGTERM', () => void shutdown().finally(() => process.exit(0)));
 
-try {
-  await bot.api.deleteWebhook({ drop_pending_updates: false });
-} catch (error) {
-  console.warn(`deleteWebhook failed (continuing): ${error instanceof Error ? error.message : String(error)}`);
+if (isWebhookMode()) {
+  await bot.api.setWebhook(`${config.TELEGRAM_WEBHOOK_URL.replace(/\/$/, '')}${normalizePath(config.TELEGRAM_WEBHOOK_PATH)}`, {
+    secret_token: config.TELEGRAM_WEBHOOK_SECRET,
+    drop_pending_updates: false,
+  });
+} else {
+  try {
+    await bot.api.deleteWebhook({ drop_pending_updates: false });
+  } catch (error) {
+    console.warn(`deleteWebhook failed (continuing): ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
+
+loadRuntimeAllowlist();
 
 const me = await bot.api.getMe();
 botUsernames.add(me.username.toLowerCase());
@@ -1152,6 +1388,7 @@ botUsernames.add(me.username.toLowerCase());
 await bot.api.setMyCommands([
   { command: 'help', description: 'Show help' },
   { command: 'project', description: 'Show or switch project' },
+  { command: 'pair', description: 'Request or manage pairing' },
   { command: 'sessions', description: 'Show active sessions' },
   { command: 'new', description: 'Start a fresh pi session' },
   { command: 'status', description: 'Show pi session state' },
@@ -1164,10 +1401,15 @@ await bot.api.setMyCommands([
 
 startIdleSweep();
 startHealthcheckServer();
+startWebhookServer();
 
 console.log(`pi-telegram-bridge-plus started as @${me.username}. Workspace: ${config.WORKSPACE_ROOT}`);
-await bot.start({
-  onStart: (botInfo) => {
-    console.log(`Telegram bot @${botInfo.username} is polling.`);
-  },
-});
+if (isWebhookMode()) {
+  console.log(`Telegram bot @${me.username} is using webhook mode.`);
+} else {
+  await bot.start({
+    onStart: (botInfo) => {
+      console.log(`Telegram bot @${botInfo.username} is polling.`);
+    },
+  });
+}

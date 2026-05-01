@@ -79,6 +79,15 @@ TELEGRAM_GROUP_REQUIRE_MENTION=true
 WORKSPACE_ROOT=/Users/you/Workspace
 ```
 
+Optional dynamic pairing:
+
+```env
+TELEGRAM_PAIRING_ENABLED=true
+TELEGRAM_PAIRING_FILE=.telegram-pairing.json
+```
+
+Unknown private-chat users can send `/pair` to receive a short-lived code. An owner can then run `/pair approve <code>`. Approved user IDs are stored locally in `TELEGRAM_PAIRING_FILE`, which is ignored by git by default.
+
 Important permissions:
 
 | Setting | Purpose |
@@ -101,6 +110,10 @@ If `TELEGRAM_OWNER_USER_IDS` is unset, allowed users become owners for backwards
 | `/sessions` | Owner-only; show active Telegram sessions |
 | `/sessions cleanup` | Owner-only; close idle non-streaming sessions now |
 | `/sessions close <key\|current>` | Owner-only; close a session and stop its pi subprocess |
+| `/pair [request]` | Request access when dynamic pairing is enabled |
+| `/pair approve <code>` | Owner-only; approve a pairing request |
+| `/pair list` | Owner-only; list paired and pending users |
+| `/pair revoke <userId>` | Owner-only; revoke a paired user |
 | `/new` | Restart this chat/topic's pi RPC process for a fresh session |
 | `/status` | Show pi RPC/session state |
 | `/diagnostics` | Owner-only; show verbose bridge/session/pi/proxy diagnostics |
@@ -115,7 +128,11 @@ Set `SESSION_IDLE_TIMEOUT_MS` to automatically close idle, non-streaming session
 
 Telegram sends are retried for flood-control and transient failures. Tune this with `TELEGRAM_SEND_RETRIES` and `TELEGRAM_SEND_RETRY_BASE_MS`.
 
+For restricted networks or a self-hosted Telegram Bot API server, set `TELEGRAM_API_ROOT` and `TELEGRAM_FILE_API_ROOT` without trailing slashes.
+
 Set `HEALTHCHECK_PORT` to enable a local HTTP healthcheck endpoint for service managers, e.g. `HEALTHCHECK_PORT=8787` exposes `GET /healthz` on `127.0.0.1` by default.
+
+Webhook mode is optional. Long polling remains the default. To use webhook mode, configure `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_WEBHOOK_HOST`, `TELEGRAM_WEBHOOK_PORT`, and `TELEGRAM_WEBHOOK_PATH`. The bridge requires Telegram's secret-token header and ACKs updates before processing them asynchronously.
 
 ## Media
 
@@ -189,8 +206,8 @@ Recommended:
 
 ## Current limitations
 
-- No webhook mode yet.
-- No dynamic pairing yet.
+- Webhook mode is available but still intentionally minimal; long polling remains the recommended default for local use.
+- Dynamic pairing is local-file based and owner-approved; there is no remote admin dashboard.
 - Outbound file/media delivery currently supports local files under `WORKSPACE_ROOT` via `MEDIA:/absolute/path` markers; structured pi RPC media events are not supported yet.
 - No per-tool approval UI yet; this depends on pi RPC approval event support.
 - Healthcheck is local HTTP status only; it does not expose Telegram control APIs.
