@@ -370,13 +370,20 @@ Acceptance criteria:
 
 ### Integration tests with mocked Telegram/pi
 
-- [ ] Private chat text prompt routes to correct pi client.
-- [ ] Two chats do not share session state.
-- [ ] Group mention triggers; normal group chatter is ignored.
-- [ ] Forum topic reply includes thread id.
-- [ ] Callback button authorization rejects unauthorized users.
+- [x] Private chat text prompt routes to correct pi client.
+  - Covered by session planner tests.
+- [x] Two chats do not share session state.
+  - Covered by session planner tests.
+- [x] Group mention triggers; normal group chatter is ignored.
+  - Covered by routing tests.
+- [x] Forum topic reply includes thread id.
+  - Covered by session planner and thread param tests.
+- [x] Callback/access authorization rejects unauthorized users.
+  - Covered by access-flow tests; inline callback-specific e2e harness still pending.
 - [ ] pi exit during run notifies user.
-- [ ] Telegram send parse failure retries plain text.
+- [x] Telegram send parse failure retries plain text.
+- [x] Webhook secret, body limit, malformed JSON, and dispatch behavior.
+- [ ] Full process-level mocked Telegram/pi harness.
 
 ### Manual QA checklist
 

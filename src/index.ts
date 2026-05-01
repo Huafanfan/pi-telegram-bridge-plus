@@ -10,13 +10,13 @@ import { loadConfig, splitArgs } from './config.js';
 import { redactProxyUrl, telegramClientOptions, telegramFetch } from './telegram-client.js';
 import { planSession } from './session-planner.js';
 import { approvePairingRecord, createPairingCode, normalizePairingStore, prunePairingRecords, revokePairingUser, type PairingRecord, type PairingStore } from './pairing.js';
+import { createWebhookServer, normalizePath } from './webhook-server.js';
+import { accessDecision, isRuntimeAllowed, isRuntimeOwner } from './access-flow.js';
 import { PiRpcClient, type PiRpcEvent } from './pi-rpc.js';
 import { displayProject, ensureProjectDirectory, resolveProjectPath } from './project.js';
 import { resolveOutboundMediaFiles, stripMediaMarkers, type OutboundMediaFile } from './outbound-media.js';
 import { escapeHtml, formatToolArgs, markdownToTelegramHtml, splitForTelegram, truncateMiddle } from './telegram-format.js';
 import {
-  isAllowed as isAllowedByPolicy,
-  isOwnerUser as isOwnerUserByPolicy,
   messageThreadId,
   shouldProcessText as shouldProcessTextByPolicy,
   stripBotMention as stripBotMentionByPolicy,
@@ -103,13 +103,16 @@ function controlMarkup(): { reply_markup?: InlineKeyboard } {
   return keyboard ? { reply_markup: keyboard } : {};
 }
 
+function runtimeAccessPolicy() {
+  return { ...accessPolicy(), runtimeAllowedUserIds };
+}
+
 function isOwnerUser(userId?: number): boolean {
-  return isOwnerUserByPolicy(accessPolicy(), userId);
+  return isRuntimeOwner(runtimeAccessPolicy(), userId);
 }
 
 function isAllowed(ctx: Context): boolean {
-  if (typeof ctx.from?.id === 'number' && runtimeAllowedUserIds.has(ctx.from.id)) return true;
-  return isAllowedByPolicy(accessPolicy(), ctx.chat, ctx.from?.id);
+  return isRuntimeAllowed(runtimeAccessPolicy(), ctx.chat, ctx.from?.id);
 }
 
 function replyParams(ctx: Context): { message_thread_id?: number } {
@@ -121,9 +124,9 @@ function replyText(ctx: Context, text: string): void {
 }
 
 function requireAllowed(ctx: Context): boolean {
-  if (isAllowed(ctx)) return true;
-  const suffix = config.TELEGRAM_PAIRING_ENABLED ? ' You can send /pair to request access.' : '';
-  replyText(ctx, `Unauthorized. Ask the bridge owner to add your Telegram user/chat id to the allowlist.${suffix}`);
+  const decision = accessDecision(runtimeAccessPolicy(), ctx.chat, ctx.from?.id, config.TELEGRAM_PAIRING_ENABLED);
+  if (decision.allowed) return true;
+  replyText(ctx, decision.message);
   return false;
 }
 
@@ -909,10 +912,6 @@ function healthPayload(): Record<string, unknown> {
   };
 }
 
-function normalizePath(value: string): string {
-  return value.startsWith('/') ? value : `/${value}`;
-}
-
 function startHealthcheckServer(): void {
   if (config.HEALTHCHECK_PORT <= 0 || healthServer) return;
   const healthPath = normalizePath(config.HEALTHCHECK_PATH);
@@ -952,42 +951,14 @@ function startWebhookServer(): void {
   if (!config.TELEGRAM_WEBHOOK_SECRET.trim()) throw new Error('TELEGRAM_WEBHOOK_SECRET is required in webhook mode');
   const webhookPath = normalizePath(config.TELEGRAM_WEBHOOK_PATH);
 
-  webhookServer = http.createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    if (req.method !== 'POST' || url.pathname !== webhookPath) {
-      res.writeHead(404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'not_found' }));
-      return;
-    }
-    if (req.headers['x-telegram-bot-api-secret-token'] !== config.TELEGRAM_WEBHOOK_SECRET) {
-      res.writeHead(401, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
-      return;
-    }
-
-    let size = 0;
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.byteLength;
-      if (size > config.TELEGRAM_WEBHOOK_MAX_BODY_BYTES) {
-        res.writeHead(413, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'payload_too_large' }));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('end', () => {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
-      try {
-        const update = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        void bot.handleUpdate(update).catch(console.error);
-      } catch (error) {
-        console.error(`Invalid webhook update: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    });
-  });
+  webhookServer = createWebhookServer(
+    {
+      path: webhookPath,
+      secret: config.TELEGRAM_WEBHOOK_SECRET,
+      maxBodyBytes: config.TELEGRAM_WEBHOOK_MAX_BODY_BYTES,
+    },
+    (update) => bot.handleUpdate(update as Parameters<typeof bot.handleUpdate>[0]),
+  );
 
   webhookServer.listen(config.TELEGRAM_WEBHOOK_PORT, config.TELEGRAM_WEBHOOK_HOST, () => {
     console.log(`Webhook listening on http://${config.TELEGRAM_WEBHOOK_HOST}:${config.TELEGRAM_WEBHOOK_PORT}${webhookPath}`);
