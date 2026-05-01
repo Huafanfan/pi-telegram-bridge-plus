@@ -27,6 +27,7 @@ This `plus` variant was created beside the original `pi-telegram-bridge` so the 
 - Telegram command menu registration.
 - Optional typing indicators and reactions.
 - Telegram send retry/backoff for flood control and transient send failures.
+- Owner-only `/diagnostics` for transport/session/pi/proxy troubleshooting.
 - Basic HTML fallback and Telegram message splitting.
 
 ## Requirements
@@ -101,6 +102,7 @@ If `TELEGRAM_OWNER_USER_IDS` is unset, allowed users become owners for backwards
 | `/sessions close <key\|current>` | Owner-only; close a session and stop its pi subprocess |
 | `/new` | Restart this chat/topic's pi RPC process for a fresh session |
 | `/status` | Show pi RPC/session state |
+| `/diagnostics` | Owner-only; show verbose bridge/session/pi/proxy diagnostics |
 | `/abort` | Owner-only; abort current pi run |
 | `/steer <text>` | Queue steering instruction during a run |
 | `/followup <text>` | Queue follow-up after current run |
@@ -188,6 +190,7 @@ Recommended:
 - No dynamic pairing yet.
 - Outbound file/media delivery currently supports local files under `WORKSPACE_ROOT` via `MEDIA:/absolute/path` markers; structured pi RPC media events are not supported yet.
 - No per-tool approval UI yet; this depends on pi RPC approval event support.
+- `/diagnostics` is Telegram-command based; there is no HTTP healthcheck endpoint yet.
 - Voice transcription requires a user-provided local command.
 
 ## Development

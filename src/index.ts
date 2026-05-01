@@ -54,6 +54,7 @@ type AlbumEntry = {
 const sessions = new Map<string, SessionState>();
 const albums = new Map<string, AlbumEntry>();
 const botUsernames = new Set<string>();
+const startedAt = Date.now();
 let idleSweepTimer: NodeJS.Timeout | null = null;
 let shuttingDown = false;
 
@@ -457,6 +458,72 @@ async function sendOutboundMedia(session: SessionState, text: string): Promise<s
   return stripMediaMarkers(text);
 }
 
+function envEnabled(name: string): boolean {
+  return Boolean(process.env[name]?.trim());
+}
+
+function sessionSummary(session: SessionState): Record<string, unknown> {
+  return {
+    key: session.key,
+    chatType: session.chatType,
+    topic: session.messageThreadId,
+    project: displayProject(config.WORKSPACE_ROOT, session.pi.cwd),
+    piRunning: session.pi.isRunning,
+    streaming: session.isStreaming,
+    idleMs: Date.now() - session.lastActivityAt,
+    pendingTextChars: session.pendingText.length,
+    lastError: session.lastError ? truncateMiddle(session.lastError, 300) : undefined,
+  };
+}
+
+async function sendDiagnostics(session: SessionState): Promise<void> {
+  let currentPiState: unknown;
+  try {
+    const response = await session.pi.getState();
+    currentPiState = response.data ?? response;
+  } catch (error) {
+    currentPiState = { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  const diagnostics = {
+    bot: {
+      usernames: [...botUsernames],
+      transport: 'long_polling',
+      uptimeMs: Date.now() - startedAt,
+    },
+    config: {
+      workspaceRoot: config.WORKSPACE_ROOT,
+      piBin: config.PI_BIN,
+      piArgs: config.piArgs.map((arg) => (arg.includes(config.TELEGRAM_BOT_TOKEN) ? '<redacted>' : arg)),
+      verboseEvents: config.VERBOSE_EVENTS,
+      controlButtons: config.SHOW_CONTROL_BUTTONS,
+      typing: config.TELEGRAM_ENABLE_TYPING,
+      reactions: config.TELEGRAM_ENABLE_REACTIONS,
+      sessionIdleTimeoutMs: config.SESSION_IDLE_TIMEOUT_MS,
+      sendRetries: config.TELEGRAM_SEND_RETRIES,
+      proxy: {
+        HTTPS_PROXY: envEnabled('HTTPS_PROXY'),
+        HTTP_PROXY: envEnabled('HTTP_PROXY'),
+        ALL_PROXY: envEnabled('ALL_PROXY'),
+        NO_PROXY: envEnabled('NO_PROXY'),
+      },
+      allowlists: {
+        allowedChatIds: config.allowedChatIds.size,
+        allowedUserIds: config.allowedUserIds.size,
+        allowedGroupIds: config.allowedGroupIds.size,
+        ownerUserIds: config.ownerUserIds.size,
+        approverUserIds: config.approverUserIds.size,
+      },
+    },
+    currentSession: sessionSummary(session),
+    activeSessions: [...sessions.values()].map(sessionSummary),
+    albumsBuffered: albums.size,
+    currentPiState,
+  };
+
+  await sendSession(session, `<b>Diagnostics</b>\n<code>${escapeHtml(JSON.stringify(diagnostics, null, 2))}</code>`, controlsKeyboard());
+}
+
 async function sendStatus(session: SessionState): Promise<void> {
   const response = await session.pi.getState();
   const state = (response.data ?? response) as Record<string, unknown>;
@@ -472,6 +539,9 @@ async function sendStatus(session: SessionState): Promise<void> {
     sessionFile: state.sessionFile,
     piRunning: session.pi.isRunning,
     activeSessions: sessions.size,
+    uptimeMs: Date.now() - startedAt,
+    transport: 'long_polling',
+    lastActivityAt: new Date(session.lastActivityAt).toISOString(),
     lastError: session.lastError,
   };
   await sendSession(session, `<b>Status</b>\n<code>${escapeHtml(JSON.stringify(compact, null, 2))}</code>`, controlsKeyboard());
@@ -793,6 +863,7 @@ bot.command(['start', 'help'], async (ctx) => {
       '/sessions - show active sessions',
       '/new - start a fresh pi session',
       '/status - show pi session state',
+      '/diagnostics - owner-only verbose diagnostics',
       '/abort - abort current pi run',
       '/steer <text> - queue steering instruction during a run',
       '/followup <text> - queue follow-up after current run',
@@ -888,6 +959,11 @@ bot.command('new', async (ctx) => {
 bot.command('status', async (ctx) => {
   if (!requireAllowed(ctx)) return;
   await sendStatus(getOrCreateSession(ctx));
+});
+
+bot.command('diagnostics', async (ctx) => {
+  if (!requireAllowed(ctx) || !requireOwner(ctx)) return;
+  await sendDiagnostics(getOrCreateSession(ctx));
 });
 
 bot.command('abort', async (ctx) => {
@@ -1066,6 +1142,7 @@ await bot.api.setMyCommands([
   { command: 'sessions', description: 'Show active sessions' },
   { command: 'new', description: 'Start a fresh pi session' },
   { command: 'status', description: 'Show pi session state' },
+  { command: 'diagnostics', description: 'Owner diagnostics' },
   { command: 'abort', description: 'Abort current pi run' },
   { command: 'steer', description: 'Steer current run' },
   { command: 'followup', description: 'Queue follow-up message' },

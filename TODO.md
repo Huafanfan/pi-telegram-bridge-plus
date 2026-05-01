@@ -329,7 +329,7 @@ Acceptance criteria:
 
 ### 3.6 Diagnostics and observability
 
-- [ ] Expand `/status` with:
+- [x] Expand `/status` with:
   - bot username
   - current transport mode
   - active session count
@@ -338,7 +338,9 @@ Acceptance criteria:
   - last activity time
   - pending queue status
   - last error summary
-- [ ] Add owner-only `/diagnostics` for verbose details.
+  - `/status` now includes transport, uptime, active session count, project, pi state, and last activity/error.
+- [x] Add owner-only `/diagnostics` for verbose details.
+  - Includes bot username, transport mode, uptime, sanitized config, proxy presence, active sessions, buffered albums, current pi state, and per-session error summaries.
 - [ ] Add structured logs with event names and session keys.
 - [ ] Add optional healthcheck command or HTTP endpoint for service managers.
 
@@ -445,7 +447,7 @@ Still pending / intentionally deferred:
 - Structured RPC outbound media events and container-path translation; text marker based outbound delivery is implemented.
 - Per-tool exec approval UI; this likely depends on pi RPC exposing approval events.
 - Markdown table/mobile formatting and code-block-aware splitting beyond the current HTML fallback.
-- More unit/integration tests for permissions, session key derivation, group mention gating, callbacks, and mocked Telegram/pi flows.
+- More unit/integration tests for permissions, session key derivation, group mention gating, callbacks, diagnostics, and mocked Telegram/pi flows.
 
 ### Self-review fixes
 
