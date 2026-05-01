@@ -1,6 +1,6 @@
 {
-  "milestone": "feature-completion-pass",
-  "updatedAt": "2026-05-01T15:00:00Z",
+  "milestone": "hardening-pass",
+  "updatedAt": "2026-05-01T15:30:00Z",
   "completed": [
     "multi-session foundation",
     "group-topic support",
@@ -16,22 +16,21 @@
     "healthcheck",
     "telegram-api-root",
     "dynamic-pairing",
-    "webhook-mode"
+    "webhook-mode",
+    "telegram-proxy-agent",
+    "session-planner-tests",
+    "pairing-helper-tests",
+    "telegram-client-tests"
   ],
   "pending": [
-    {
-      "id": "telegram-proxy-agent",
-      "title": "Explicit TELEGRAM_PROXY agent support beyond inherited standard proxy env",
-      "status": "pending"
-    },
     {
       "id": "approval-ui",
       "title": "Per-tool approval UI if pi RPC supports it",
       "status": "blocked-pi-rpc-research"
     },
     {
-      "id": "integration-tests",
-      "title": "Mocked Telegram/pi integration tests",
+      "id": "full-integration-tests",
+      "title": "End-to-end mocked Telegram/pi integration harness",
       "status": "pending"
     }
   ],

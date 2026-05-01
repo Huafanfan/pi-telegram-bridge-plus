@@ -128,7 +128,9 @@ Set `SESSION_IDLE_TIMEOUT_MS` to automatically close idle, non-streaming session
 
 Telegram sends are retried for flood-control and transient failures. Tune this with `TELEGRAM_SEND_RETRIES` and `TELEGRAM_SEND_RETRY_BASE_MS`.
 
-For restricted networks or a self-hosted Telegram Bot API server, set `TELEGRAM_API_ROOT` and `TELEGRAM_FILE_API_ROOT` without trailing slashes.
+For restricted networks, set `TELEGRAM_PROXY=http://host:port` to force grammY API calls and Telegram file downloads through an explicit HTTP/HTTPS proxy. Standard `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY` may also work depending on your Node runtime, and `/diagnostics` reports whether they are present.
+
+For a self-hosted Telegram Bot API server, set `TELEGRAM_API_ROOT` and `TELEGRAM_FILE_API_ROOT` without trailing slashes.
 
 Set `HEALTHCHECK_PORT` to enable a local HTTP healthcheck endpoint for service managers, e.g. `HEALTHCHECK_PORT=8787` exposes `GET /healthz` on `127.0.0.1` by default.
 

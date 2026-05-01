@@ -319,7 +319,8 @@ Acceptance criteria:
 
 ### 3.5 Proxy and network configuration
 
-- [ ] Support `TELEGRAM_PROXY` explicitly.
+- [x] Support `TELEGRAM_PROXY` explicitly.
+  - Implemented with undici `ProxyAgent` for grammY API calls and Telegram file downloads.
 - [x] Respect standard `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, and `NO_PROXY` where grammY/fetch allows.
   - Node/grammY/fetch inherit process env; `/diagnostics` reports proxy presence.
 - [x] Add configurable Telegram API root for self-hosted Bot API server if needed.

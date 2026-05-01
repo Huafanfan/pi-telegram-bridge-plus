@@ -3,11 +3,13 @@ import { Bot, GrammyError, HttpError, InlineKeyboard, InputFile, type Context } 
 import type { Message, ReactionTypeEmoji } from 'grammy/types';
 import path from 'node:path';
 import fs from 'node:fs';
-import crypto from 'node:crypto';
 import http, { type Server } from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { loadConfig, splitArgs } from './config.js';
+import { redactProxyUrl, telegramClientOptions, telegramFetch } from './telegram-client.js';
+import { planSession } from './session-planner.js';
+import { approvePairingRecord, createPairingCode, normalizePairingStore, prunePairingRecords, revokePairingUser, type PairingRecord, type PairingStore } from './pairing.js';
 import { PiRpcClient, type PiRpcEvent } from './pi-rpc.js';
 import { displayProject, ensureProjectDirectory, resolveProjectPath } from './project.js';
 import { resolveOutboundMediaFiles, stripMediaMarkers, type OutboundMediaFile } from './outbound-media.js';
@@ -16,7 +18,6 @@ import {
   isAllowed as isAllowedByPolicy,
   isOwnerUser as isOwnerUserByPolicy,
   messageThreadId,
-  sessionKeyFor,
   shouldProcessText as shouldProcessTextByPolicy,
   stripBotMention as stripBotMentionByPolicy,
   threadParams,
@@ -26,7 +27,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const config = loadConfig();
-const bot = new Bot(config.TELEGRAM_BOT_TOKEN, { client: { apiRoot: config.TELEGRAM_API_ROOT } });
+const bot = new Bot(config.TELEGRAM_BOT_TOKEN, { client: telegramClientOptions(config) });
 
 const MAX_TELEGRAM_API_CHARS = 4096;
 
@@ -62,21 +63,6 @@ type AlbumEntry = {
   images: RpcImage[];
   timer: NodeJS.Timeout;
   totalBytes: number;
-};
-
-type PairingRecord = {
-  code: string;
-  userId: number;
-  chatId: number;
-  username?: string;
-  firstName?: string;
-  createdAt: number;
-  expiresAt: number;
-};
-
-type PairingStore = {
-  allowedUserIds: number[];
-  pending: PairingRecord[];
 };
 
 const sessions = new Map<string, SessionState>();
@@ -186,11 +172,7 @@ function pairingFilePath(): string {
 
 function loadPairingStore(): PairingStore {
   try {
-    const raw = JSON.parse(fs.readFileSync(pairingFilePath(), 'utf8')) as Partial<PairingStore>;
-    return {
-      allowedUserIds: Array.isArray(raw.allowedUserIds) ? raw.allowedUserIds.filter((id): id is number => typeof id === 'number') : [],
-      pending: Array.isArray(raw.pending) ? raw.pending.filter((item): item is PairingRecord => typeof item === 'object' && item !== null && typeof item.code === 'string' && typeof item.userId === 'number') : [],
-    };
+    return normalizePairingStore(JSON.parse(fs.readFileSync(pairingFilePath(), 'utf8')));
   } catch {
     return { allowedUserIds: [], pending: [] };
   }
@@ -209,9 +191,10 @@ function loadRuntimeAllowlist(): void {
 }
 
 function pruneExpiredPairings(now = Date.now()): void {
-  for (const [code, record] of pendingPairing.entries()) {
-    if (record.expiresAt <= now) pendingPairing.delete(code);
-  }
+  const active = prunePairingRecords(pendingPairing.values(), now);
+  if (active.length === pendingPairing.size) return;
+  pendingPairing.clear();
+  for (const record of active) pendingPairing.set(record.code, record);
 }
 
 function createPairingRequest(ctx: Context): PairingRecord {
@@ -220,7 +203,7 @@ function createPairingRequest(ctx: Context): PairingRecord {
   for (const existing of pendingPairing.values()) {
     if (existing.userId === ctx.from.id) return existing;
   }
-  const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+  const code = createPairingCode(new Set(pendingPairing.keys()));
   const now = Date.now();
   const record: PairingRecord = {
     code,
@@ -240,9 +223,7 @@ function approvePairing(code: string): PairingRecord | undefined {
   const normalized = code.trim().toUpperCase();
   const record = pendingPairing.get(normalized);
   if (!record) return undefined;
-  const store = loadPairingStore();
-  store.allowedUserIds = [...new Set([...store.allowedUserIds, record.userId])];
-  store.pending = store.pending.filter((item) => item.code !== normalized);
+  const store = approvePairingRecord(loadPairingStore(), record);
   savePairingStore(store);
   runtimeAllowedUserIds.add(record.userId);
   pendingPairing.delete(normalized);
@@ -250,19 +231,17 @@ function approvePairing(code: string): PairingRecord | undefined {
 }
 
 function revokePairedUser(userId: number): boolean {
-  const store = loadPairingStore();
-  const before = store.allowedUserIds.length;
-  store.allowedUserIds = store.allowedUserIds.filter((id) => id !== userId);
-  savePairingStore(store);
+  const result = revokePairingUser(loadPairingStore(), userId);
+  savePairingStore(result.store);
   runtimeAllowedUserIds.delete(userId);
-  return store.allowedUserIds.length !== before;
+  return result.revoked;
 }
 
 function getOrCreateSession(ctx: Context): SessionState {
   if (!ctx.chat) throw new Error('Missing chat');
-  const isGroup = isGroupChatType(ctx.chat.type);
-  const threadId = contextThreadId(ctx);
-  const key = sessionKeyFor(ctx.chat.id, isGroup, threadId);
+  const plan = planSession(ctx.chat, ctx.message ?? ctx.callbackQuery?.message);
+  const threadId = plan.threadId;
+  const key = plan.key;
   const existing = sessions.get(key);
   if (existing) {
     existing.chatId = ctx.chat.id;
@@ -276,8 +255,8 @@ function getOrCreateSession(ctx: Context): SessionState {
   const pi = new PiRpcClient({ piBin: config.PI_BIN, cwd, args: config.piArgs });
   const session: SessionState = {
     key,
-    chatId: ctx.chat.id,
-    chatType: ctx.chat.type,
+    chatId: plan.chatId,
+    chatType: plan.chatType,
     messageThreadId: threadId,
     cwd,
     pi,
@@ -585,6 +564,7 @@ async function sendDiagnostics(session: SessionState): Promise<void> {
       sendRetries: config.TELEGRAM_SEND_RETRIES,
       telegramApiRoot: config.TELEGRAM_API_ROOT,
       telegramFileApiRoot: config.TELEGRAM_FILE_API_ROOT,
+      telegramProxy: redactProxyUrl(config.TELEGRAM_PROXY),
       proxy: {
         HTTPS_PROXY: envEnabled('HTTPS_PROXY'),
         HTTP_PROXY: envEnabled('HTTP_PROXY'),
@@ -790,7 +770,7 @@ async function fetchTelegramFile(fileId: string, maxBytes: number): Promise<{ da
   if (!file.file_path) throw new Error('Telegram file path is missing');
   const fileRoot = config.TELEGRAM_FILE_API_ROOT.replace(/\/$/, '');
   const url = `${fileRoot}/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-  const response = await fetch(url);
+  const response = await telegramFetch(config)(url);
   if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
   const length = Number(response.headers.get('content-length'));
   if (Number.isFinite(length) && length > maxBytes) throw new Error(`File too large (${length} bytes)`);

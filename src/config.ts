@@ -31,6 +31,7 @@ const schema = z.object({
   TELEGRAM_ENABLE_TYPING: boolFromEnv.default(true),
   TELEGRAM_SEND_RETRIES: z.coerce.number().int().nonnegative().default(3),
   TELEGRAM_SEND_RETRY_BASE_MS: z.coerce.number().int().positive().default(750),
+  TELEGRAM_PROXY: z.string().default(''),
   TELEGRAM_API_ROOT: z.string().default('https://api.telegram.org'),
   TELEGRAM_FILE_API_ROOT: z.string().default('https://api.telegram.org/file'),
   TELEGRAM_PAIRING_ENABLED: boolFromEnv.default(false),
