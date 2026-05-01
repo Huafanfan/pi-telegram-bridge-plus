@@ -371,9 +371,9 @@ Acceptance criteria:
 ### Integration tests with mocked Telegram/pi
 
 - [x] Private chat text prompt routes to correct pi client.
-  - Covered by session planner tests.
+  - Covered by bridge-core process-level tests.
 - [x] Two chats do not share session state.
-  - Covered by session planner tests.
+  - Covered by bridge-core process-level tests.
 - [x] Group mention triggers; normal group chatter is ignored.
   - Covered by routing tests.
 - [x] Forum topic reply includes thread id.
@@ -383,7 +383,8 @@ Acceptance criteria:
 - [ ] pi exit during run notifies user.
 - [x] Telegram send parse failure retries plain text.
 - [x] Webhook secret, body limit, malformed JSON, and dispatch behavior.
-- [ ] Full process-level mocked Telegram/pi harness.
+- [x] Process-level mocked bridge-core harness for text/session flows.
+- [ ] Full fake grammY + fake pi RPC harness wired to CLI entrypoint.
 
 ### Manual QA checklist
 

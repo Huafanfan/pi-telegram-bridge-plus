@@ -1,6 +1,6 @@
 {
-  "milestone": "integration-test-pass",
-  "updatedAt": "2026-05-01T16:00:00Z",
+  "milestone": "bridge-core-process-test-pass",
+  "updatedAt": "2026-05-01T16:30:00Z",
   "completed": [
     "multi-session foundation",
     "group-topic support",
@@ -22,7 +22,8 @@
     "pairing-helper-tests",
     "telegram-client-tests",
     "webhook-server-integration-tests",
-    "access-flow-tests"
+    "access-flow-tests",
+    "bridge-core-process-tests"
   ],
   "pending": [
     {
@@ -31,8 +32,13 @@
       "status": "blocked-pi-rpc-research"
     },
     {
-      "id": "full-process-integration-tests",
-      "title": "End-to-end mocked Telegram/pi process harness including pi exit notifications",
+      "id": "cli-entrypoint-fake-grammy-pi-harness",
+      "title": "Full fake grammY + fake pi RPC harness wired to CLI entrypoint",
+      "status": "pending"
+    },
+    {
+      "id": "pi-exit-notification-test",
+      "title": "Process-level pi exit during run notification test",
       "status": "pending"
     }
   ],
