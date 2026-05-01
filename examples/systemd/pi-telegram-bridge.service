@@ -1,0 +1,16 @@
+[Unit]
+Description=pi Telegram Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/you/pi-telegram-bridge
+ExecStart=/usr/bin/node /home/you/pi-telegram-bridge/dist/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
