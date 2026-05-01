@@ -12,6 +12,7 @@ import { planSession } from './session-planner.js';
 import { approvePairingRecord, createPairingCode, normalizePairingStore, prunePairingRecords, revokePairingUser, type PairingRecord, type PairingStore } from './pairing.js';
 import { createWebhookServer, normalizePath } from './webhook-server.js';
 import { accessDecision, isRuntimeAllowed, isRuntimeOwner } from './access-flow.js';
+import { forwardPiError, forwardPiEvent, forwardPiExit, forwardPiStderr } from './pi-event-forwarder.js';
 import { PiRpcClient, type PiRpcEvent } from './pi-rpc.js';
 import { displayProject, ensureProjectDirectory, resolveProjectPath } from './project.js';
 import { resolveOutboundMediaFiles, stripMediaMarkers, type OutboundMediaFile } from './outbound-media.js';
@@ -439,19 +440,6 @@ async function react(ctx: Context, emoji: ReactionTypeEmoji['emoji']): Promise<v
   }
 }
 
-function assistantTextDelta(event: PiRpcEvent): string | null {
-  const nested = event.assistantMessageEvent;
-  if (typeof nested === 'object' && nested !== null) {
-    const maybe = nested as Record<string, unknown>;
-    if (maybe.type === 'text_delta' && typeof maybe.delta === 'string') return maybe.delta;
-  }
-  return null;
-}
-
-function eventType(event: PiRpcEvent): string {
-  return typeof event.type === 'string' ? event.type : 'unknown';
-}
-
 function messageText(message: unknown): string {
   if (typeof message !== 'object' || message === null) return '';
   const msg = message as Record<string, unknown>;
@@ -641,86 +629,50 @@ async function handleAssistantFinal(session: SessionState, message: Record<strin
 
 function setupPiEventForwarding(session: SessionState): void {
   const { pi } = session;
+  const forwardConfig = {
+    verboseEvents: config.VERBOSE_EVENTS,
+    toolUpdateThrottleMs: config.TOOL_UPDATE_THROTTLE_MS,
+    shuttingDown: () => shuttingDown,
+  };
+  const forwardDeps = {
+    send: async (html: string) => {
+      await sendSession(session, html, controlsKeyboard());
+    },
+    flushText: async () => {
+      const text = session.pendingText.trim();
+      session.pendingText = '';
+      const visibleText = await sendOutboundMedia(session, text);
+      if (visibleText) await editOrSendPreview(session, visibleText);
+    },
+    handleAssistantFinal: async (event: Record<string, unknown>) => {
+      await handleAssistantFinal(session, assistantMessageFromEvent(event as PiRpcEvent));
+    },
+    startTyping: () => startTyping(session),
+    stopTyping: () => stopTyping(session),
+    formatToolArgs,
+    escapeHtml,
+    truncateMiddle,
+    projectLabel: () => displayProject(config.WORKSPACE_ROOT, pi.cwd),
+    now: () => Date.now(),
+  };
+
   pi.on('event', (event: PiRpcEvent) => {
-    const type = eventType(event);
-
-    // Avoid sending final assistant text on message_end/turn_end because agent_end
-    // carries the same final message. Handling all three races with preview reset
-    // and can duplicate the same answer in Telegram.
-    if (type === 'message_end' || type === 'turn_end') return;
-
-    if (type === 'agent_start') {
-      session.isStreaming = true;
-      startTyping(session);
-      if (config.VERBOSE_EVENTS) {
-        void sendSession(session, `🚀 <b>pi started</b>\nProject: <code>${escapeHtml(displayProject(config.WORKSPACE_ROOT, pi.cwd))}</code>`, controlsKeyboard()).catch(console.error);
-      }
-      return;
-    }
-    if (type === 'agent_end') {
-      void (async () => {
-        await handleAssistantFinal(session, assistantMessageFromEvent(event));
-        stopTyping(session);
-        session.isStreaming = false;
-        if (session.pendingText.trim()) {
-          const text = session.pendingText.trim();
-          session.pendingText = '';
-          const visibleText = await sendOutboundMedia(session, text);
-          if (visibleText) await editOrSendPreview(session, visibleText);
-        }
-        session.previewMessageId = undefined;
-        session.previewLastText = '';
-      })().catch(console.error);
-      if (config.VERBOSE_EVENTS) {
-        void sendSession(session, '✅ <b>pi finished</b>', controlsKeyboard()).catch(console.error);
-      }
-      return;
-    }
-    if (type === 'tool_execution_start') {
-      if (config.VERBOSE_EVENTS) {
-        const now = Date.now();
-        if (now - session.lastToolUpdateAt < config.TOOL_UPDATE_THROTTLE_MS) return;
-        session.lastToolUpdateAt = now;
-        const toolName = typeof event.toolName === 'string' ? event.toolName : 'tool';
-        const details = truncateMiddle(formatToolArgs(event.args), 700);
-        void sendSession(session, `🔧 <b>${escapeHtml(toolName)}</b>${details ? `\n<code>${escapeHtml(details)}</code>` : ''}`).catch(console.error);
-      }
-      return;
-    }
-    if (type === 'tool_execution_end' && event.isError === true) {
-      const toolName = typeof event.toolName === 'string' ? event.toolName : 'tool';
-      const result = truncateMiddle(formatToolArgs(event.result), 1000);
-      void sendSession(session, `❌ <b>${escapeHtml(toolName)} failed</b>${result ? `\n<code>${escapeHtml(result)}</code>` : ''}`, controlsKeyboard()).catch(console.error);
-      return;
-    }
-
-    const delta = assistantTextDelta(event);
-    if (delta) {
-      session.pendingText += delta;
-      scheduleTextFlush(session);
-    }
+    void (async () => {
+      const action = await forwardPiEvent(session, event as Record<string, unknown>, forwardConfig, forwardDeps);
+      if (action === 'delta') scheduleTextFlush(session);
+    })().catch(console.error);
   });
 
   pi.on('stderr', (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    session.lastError = trimmed;
-    if (config.VERBOSE_EVENTS) {
-      void sendSession(session, `⚠️ <b>pi stderr</b>\n<code>${escapeHtml(truncateMiddle(trimmed, 1200))}</code>`).catch(console.error);
-    }
+    void forwardPiStderr(session, text, forwardConfig, forwardDeps).catch(console.error);
   });
 
   pi.on('exit', (info: unknown) => {
-    stopTyping(session);
-    session.isStreaming = false;
-    session.lastError = `pi RPC exited: ${JSON.stringify(info)}`;
-    if (!shuttingDown) {
-      void sendSession(session, `🛑 <b>pi RPC exited</b>\n<code>${escapeHtml(JSON.stringify(info))}</code>`, controlsKeyboard()).catch(console.error);
-    }
+    void forwardPiExit(session, info, forwardConfig, forwardDeps).catch(console.error);
   });
 
   pi.on('error', (error) => {
-    session.lastError = error instanceof Error ? error.message : String(error);
+    forwardPiError(session, error);
   });
 }
 

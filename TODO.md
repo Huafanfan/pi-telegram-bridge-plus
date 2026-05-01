@@ -380,7 +380,8 @@ Acceptance criteria:
   - Covered by session planner and thread param tests.
 - [x] Callback/access authorization rejects unauthorized users.
   - Covered by access-flow tests; inline callback-specific e2e harness still pending.
-- [ ] pi exit during run notifies user.
+- [x] pi exit during run notifies user.
+  - Covered by `pi-event-forwarder` tests.
 - [x] Telegram send parse failure retries plain text.
 - [x] Webhook secret, body limit, malformed JSON, and dispatch behavior.
 - [x] Process-level mocked bridge-core harness for text/session flows.
