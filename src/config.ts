@@ -36,6 +36,9 @@ const schema = z.object({
   TELEGRAM_FILE_API_ROOT: z.string().default('https://api.telegram.org/file'),
   TELEGRAM_PAIRING_ENABLED: boolFromEnv.default(false),
   TELEGRAM_PAIRING_FILE: z.string().default('.telegram-pairing.json'),
+  TELEGRAM_TOPIC_CONFIG_FILE: z.string().default(''),
+  TELEGRAM_REACTION_NOTIFICATIONS: z.enum(['off', 'own', 'all']).default('off'),
+  TELEGRAM_ACTIONS_ENABLED: boolFromEnv.default(false),
   TELEGRAM_PAIRING_CODE_TTL_MS: z.coerce.number().int().positive().default(10 * 60_000),
 
   WORKSPACE_ROOT: z.string().default(process.cwd()),
@@ -52,6 +55,8 @@ const schema = z.object({
   MAX_VOICE_BYTES: z.coerce.number().int().positive().default(20_000_000),
   MAX_ALBUM_IMAGES: z.coerce.number().int().positive().default(10),
   MAX_OUTBOUND_FILE_BYTES: z.coerce.number().int().positive().default(20_000_000),
+  MAX_VIDEO_BYTES: z.coerce.number().int().positive().default(50_000_000),
+  MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(30_000_000),
 
   VERBOSE_EVENTS: boolFromEnv.default(false),
   SHOW_CONTROL_BUTTONS: boolFromEnv.default(false),

@@ -6,3 +6,5 @@ dist/
 .DS_Store
 *.log
 .telegram-pairing.json
+.telegram-topics.json
+.telegram-media/

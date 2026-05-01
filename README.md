@@ -88,6 +88,29 @@ TELEGRAM_PAIRING_FILE=.telegram-pairing.json
 
 Unknown private-chat users can send `/pair` to receive a short-lived code. An owner can then run `/pair approve <code>`. Approved user IDs are stored locally in `TELEGRAM_PAIRING_FILE`, which is ignored by git by default.
 
+Optional per-topic config uses a local JSON file:
+
+```env
+TELEGRAM_TOPIC_CONFIG_FILE=.telegram-topics.json
+```
+
+Example:
+
+```json
+{
+  "-1001234567890": {
+    "requireMention": true,
+    "topics": {
+      "10": { "requireMention": false, "project": "frontend" },
+      "20": { "enabled": false },
+      "30": { "allowedUserIds": [123456789], "mentionPatterns": ["^pi\\b"] }
+    }
+  }
+}
+```
+
+Topic `project` values are resolved under `WORKSPACE_ROOT`.
+
 Important permissions:
 
 | Setting | Purpose |
@@ -136,11 +159,29 @@ Set `HEALTHCHECK_PORT` to enable a local HTTP healthcheck endpoint for service m
 
 Webhook mode is optional. Long polling remains the default. To use webhook mode, configure `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_WEBHOOK_HOST`, `TELEGRAM_WEBHOOK_PORT`, and `TELEGRAM_WEBHOOK_PATH`. The bridge requires Telegram's secret-token header and ACKs updates before processing them asynchronously.
 
+Reaction notifications are optional:
+
+```env
+TELEGRAM_REACTION_NOTIFICATIONS=own # off | own | all
+```
+
+Recorded reactions are prepended to the next prompt in that Telegram session.
+
+Telegram actions are disabled by default. When enabled, pi can emit fenced action blocks that are executed in the current chat/thread only:
+
+````markdown
+```telegram-action
+{"type":"send_message","text":"Done"}
+```
+````
+
+Supported action types: `send_message`, `send_photo`, `send_document`, `send_audio`, `send_voice`, `send_video`, `react`, and `buttons`. File actions must point to files under `WORKSPACE_ROOT`.
+
 ## Media
 
 ### Photos and albums
 
-Send a Telegram photo with an optional caption to forward the image to pi. Albums with `media_group_id` are debounced and forwarded as one prompt.
+Send a Telegram photo or static WEBP sticker with an optional caption to forward the image to pi. Albums with `media_group_id` are debounced and forwarded as one prompt.
 
 ### Voice
 
@@ -157,9 +198,10 @@ The downloaded `.ogg` path is appended as the final argument. The command must p
 Supported text-like document extensions are injected into the prompt:
 
 - `.txt`, `.md`, `.json`, `.csv`, `.log`
-- `.ts`, `.js`, `.py`, `.yaml`, `.yml`
+- `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.yaml`, `.yml`
+- `.html`, `.xml`, `.sql`, `.toml`, `.ini`, `.css`, `.scss`, `.go`, `.rs`, `.java`, `.c`, `.cpp`, `.h`, `.hpp`, `.sh`
 
-Other document types are rejected for now.
+Other document types are saved under `.telegram-media/` inside `WORKSPACE_ROOT` and passed to pi as file paths. Audio/video inputs are also saved there and passed as file paths.
 
 ### Outbound files
 

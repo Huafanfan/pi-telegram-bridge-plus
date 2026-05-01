@@ -1,6 +1,6 @@
 {
-  "milestone": "image-mime-fix",
-  "updatedAt": "2026-05-01T17:30:00Z",
+  "milestone": "telegram-gateway-feature-parity-pass",
+  "updatedAt": "2026-05-01T18:30:00Z",
   "completed": [
     "multi-session foundation",
     "group-topic support",
@@ -26,7 +26,12 @@
     "bridge-core-process-tests",
     "pi-event-forwarder-tests",
     "pi-exit-notification-test",
-    "telegram-photo-mime-fallback"
+    "telegram-photo-mime-fallback",
+    "static-sticker-vision",
+    "reaction-notifications",
+    "per-topic-config",
+    "expanded-media-input",
+    "telegram-action-fenced-blocks"
   ],
   "pending": [
     {

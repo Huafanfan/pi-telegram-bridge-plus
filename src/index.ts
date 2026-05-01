@@ -14,12 +14,17 @@ import { createWebhookServer, normalizePath } from './webhook-server.js';
 import { accessDecision, isRuntimeAllowed, isRuntimeOwner } from './access-flow.js';
 import { forwardPiError, forwardPiEvent, forwardPiExit, forwardPiStderr } from './pi-event-forwarder.js';
 import { imageMimeForTelegramPhoto } from './mime.js';
+import { effectiveTopicConfig, isTopicUserAllowed, loadTopicConfigFile } from './topic-config.js';
+import { formatReactionNote, prependSystemEvents, shouldRecordReaction, type ReactionMode } from './reaction-notifications.js';
+import { parseTelegramActions, resolveTelegramActionFile, type TelegramAction } from './telegram-actions.js';
+import { isTextDocumentExtension, mediaSavedPrompt, saveTelegramMediaFile, supportedTextDocumentExtensions } from './media-input.js';
 import { PiRpcClient, type PiRpcEvent } from './pi-rpc.js';
 import { displayProject, ensureProjectDirectory, resolveProjectPath } from './project.js';
 import { resolveOutboundMediaFiles, stripMediaMarkers, type OutboundMediaFile } from './outbound-media.js';
 import { escapeHtml, formatToolArgs, markdownToTelegramHtml, splitForTelegram, truncateMiddle } from './telegram-format.js';
 import {
   messageThreadId,
+  sessionKeyFor,
   shouldProcessText as shouldProcessTextByPolicy,
   stripBotMention as stripBotMentionByPolicy,
   threadParams,
@@ -52,6 +57,8 @@ type SessionState = {
   isStreaming: boolean;
   typingTimer: NodeJS.Timeout | null;
   sentMediaMarkers: Set<string>;
+  systemEvents: string[];
+  botMessageIds: Set<number>;
   lastError?: string;
 };
 
@@ -72,6 +79,7 @@ const albums = new Map<string, AlbumEntry>();
 const botUsernames = new Set<string>();
 const runtimeAllowedUserIds = new Set<number>();
 const pendingPairing = new Map<string, PairingRecord>();
+const topicConfig = loadTopicConfigFile(config.TELEGRAM_TOPIC_CONFIG_FILE);
 const startedAt = Date.now();
 let idleSweepTimer: NodeJS.Timeout | null = null;
 let healthServer: Server | null = null;
@@ -80,6 +88,10 @@ let shuttingDown = false;
 
 function contextThreadId(ctx: Context): number | undefined {
   return messageThreadId(ctx.message ?? ctx.callbackQuery?.message);
+}
+
+function effectiveConfigFor(ctx: Context) {
+  return effectiveTopicConfig(topicConfig, ctx.chat, contextThreadId(ctx));
 }
 
 function accessPolicy(): AccessPolicy {
@@ -126,6 +138,15 @@ function replyText(ctx: Context, text: string): void {
 }
 
 function requireAllowed(ctx: Context): boolean {
+  const topic = effectiveConfigFor(ctx);
+  if (topic.enabled === false) {
+    replyText(ctx, 'This Telegram topic is disabled for this bridge.');
+    return false;
+  }
+  if (!isTopicUserAllowed(topic, ctx.from?.id)) {
+    replyText(ctx, 'This Telegram topic is restricted to specific users.');
+    return false;
+  }
   const decision = accessDecision(runtimeAccessPolicy(), ctx.chat, ctx.from?.id, config.TELEGRAM_PAIRING_ENABLED);
   if (decision.allowed) return true;
   replyText(ctx, decision.message);
@@ -256,7 +277,8 @@ function getOrCreateSession(ctx: Context): SessionState {
     return existing;
   }
 
-  const cwd = resolveProjectPath(config.WORKSPACE_ROOT, '');
+  const topic = effectiveConfigFor(ctx);
+  const cwd = resolveProjectPath(config.WORKSPACE_ROOT, topic.project ?? '');
   const pi = new PiRpcClient({ piBin: config.PI_BIN, cwd, args: config.piArgs });
   const session: SessionState = {
     key,
@@ -274,6 +296,8 @@ function getOrCreateSession(ctx: Context): SessionState {
     isStreaming: false,
     typingTimer: null,
     sentMediaMarkers: new Set(),
+    systemEvents: [],
+    botMessageIds: new Set(),
   };
   setupPiEventForwarding(session);
   pi.start();
@@ -380,7 +404,9 @@ async function sendTelegramMessage(
 }
 
 async function sendSession(session: SessionState, text: string, keyboard?: InlineKeyboard, plain = false): Promise<number | undefined> {
-  return sendTelegramMessage(session.chatId, text, { keyboard, threadId: session.messageThreadId, plain });
+  const id = await sendTelegramMessage(session.chatId, text, { keyboard, threadId: session.messageThreadId, plain });
+  if (typeof id === 'number') session.botMessageIds.add(id);
+  return id;
 }
 
 async function editOrSendPreview(session: SessionState, text: string): Promise<void> {
@@ -463,8 +489,8 @@ function messageText(message: unknown): string {
     .trim();
 }
 
-async function sendOutboundMediaFile(session: SessionState, file: OutboundMediaFile): Promise<void> {
-  const caption = `📎 ${file.fileName}`;
+async function sendOutboundMediaFile(session: SessionState, file: OutboundMediaFile, customCaption?: string): Promise<void> {
+  const caption = customCaption ?? `📎 ${file.fileName}`;
   const baseOptions = threadParams(session.messageThreadId);
   switch (file.kind) {
     case 'photo':
@@ -483,6 +509,44 @@ async function sendOutboundMediaFile(session: SessionState, file: OutboundMediaF
       await bot.api.sendDocument(session.chatId, new InputFile(file.path), { caption, ...baseOptions });
       return;
   }
+}
+
+async function executeTelegramAction(session: SessionState, action: TelegramAction, ctx?: Context): Promise<void> {
+  if (action.type === 'send_message') {
+    await sendSession(session, markdownToTelegramHtml(action.text));
+    return;
+  }
+  if (action.type === 'react') {
+    if (ctx) await react(ctx, action.emoji as ReactionTypeEmoji['emoji']);
+    return;
+  }
+  if (action.type === 'buttons') {
+    const keyboard = new InlineKeyboard();
+    for (const row of action.buttons) {
+      for (const label of row) keyboard.text(label, `tg_action:${label.slice(0, 32)}`);
+      keyboard.row();
+    }
+    await sendSession(session, markdownToTelegramHtml(action.text), keyboard);
+    return;
+  }
+  const resolved = resolveTelegramActionFile(action, config.WORKSPACE_ROOT, config.MAX_OUTBOUND_FILE_BYTES);
+  if (resolved.error || !resolved.file) throw new Error(resolved.error ?? 'Could not resolve telegram-action file');
+  await sendOutboundMediaFile(session, { ...resolved.file, kind: action.type.replace('send_', '') as OutboundMediaFile['kind'] }, action.caption);
+}
+
+async function executeTelegramActions(session: SessionState, text: string, ctx?: Context): Promise<string> {
+  if (!config.TELEGRAM_ACTIONS_ENABLED) return text;
+  const parsed = parseTelegramActions(text);
+  const errors = [...parsed.errors];
+  for (const action of parsed.actions) {
+    try {
+      await executeTelegramAction(session, action, ctx);
+    } catch (error) {
+      errors.push(`telegram-action ${action.type} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (errors.length) await sendSession(session, `⚠️ <b>Telegram action issues</b>\n<code>${escapeHtml(errors.join('\n'))}</code>`).catch(console.error);
+  return parsed.visibleText;
 }
 
 async function sendOutboundMedia(session: SessionState, text: string): Promise<string> {
@@ -507,7 +571,7 @@ async function sendOutboundMedia(session: SessionState, text: string): Promise<s
     await sendSession(session, `⚠️ <b>MEDIA delivery issues</b>\n<code>${escapeHtml(errors.join('\n'))}</code>`).catch(console.error);
   }
 
-  return stripMediaMarkers(text);
+  return executeTelegramActions(session, stripMediaMarkers(text));
 }
 
 function envEnabled(name: string): boolean {
@@ -679,6 +743,9 @@ function setupPiEventForwarding(session: SessionState): void {
 
 async function sendPromptToSession(session: SessionState, text: string, images?: RpcImage[], ctx?: Context): Promise<void> {
   if (ctx) await react(ctx, '👀');
+  if (session.systemEvents.length) {
+    text = prependSystemEvents(text, session.systemEvents.splice(0));
+  }
   if (images?.length) {
     await sendSession(session, `🖼️ 收到 ${images.length} 张图片，我看一下。`, controlsKeyboard());
   }
@@ -711,13 +778,14 @@ function stripBotMention(text: string): string {
 }
 
 function shouldProcessText(ctx: Context, text: string): boolean {
+  const topic = effectiveConfigFor(ctx);
   return shouldProcessTextByPolicy({
     chat: ctx.chat,
     message: ctx.message,
     text,
-    requireMention: config.TELEGRAM_GROUP_REQUIRE_MENTION,
+    requireMention: topic.requireMention ?? config.TELEGRAM_GROUP_REQUIRE_MENTION,
     botUsernames,
-    mentionPatterns: config.mentionPatterns,
+    mentionPatterns: [...config.mentionPatterns, ...topic.mentionRegexes],
   });
 }
 
@@ -752,7 +820,8 @@ function albumKey(ctx: Context): string {
 function getSessionByAlbumEntry(entry: AlbumEntry): SessionState {
   const existing = sessions.get(entry.sessionKey);
   if (existing) return existing;
-  const cwd = resolveProjectPath(config.WORKSPACE_ROOT, '');
+  const topic = effectiveTopicConfig(topicConfig, { id: entry.chatId, type: entry.chatType }, entry.messageThreadId);
+  const cwd = resolveProjectPath(config.WORKSPACE_ROOT, topic.project ?? '');
   const pi = new PiRpcClient({ piBin: config.PI_BIN, cwd, args: config.piArgs });
   const session: SessionState = {
     key: entry.sessionKey,
@@ -770,6 +839,8 @@ function getSessionByAlbumEntry(entry: AlbumEntry): SessionState {
     isStreaming: false,
     typingTimer: null,
     sentMediaMarkers: new Set(),
+    systemEvents: [],
+    botMessageIds: new Set(),
   };
   setupPiEventForwarding(session);
   pi.start();
@@ -1179,6 +1250,38 @@ bot.callbackQuery('abort', async (ctx) => {
 
 bot.on('message:photo', handlePhoto);
 
+bot.on('message:sticker', async (ctx) => {
+  if (!requireAllowed(ctx)) return;
+  const session = getOrCreateSession(ctx);
+  const sticker = ctx.message.sticker;
+  if (sticker.is_animated || sticker.is_video) {
+    await ctx.reply('Sticker type is not supported yet. Static WEBP stickers are supported.', threadParams(session.messageThreadId));
+    return;
+  }
+  try {
+    const file = await fetchTelegramFile(sticker.file_id, config.MAX_IMAGE_BYTES);
+    const mimeType = imageMimeForTelegramPhoto({ headerMime: file.mimeType, filePath: file.filePath, data: file.data, fallback: 'image/webp' });
+    const prompt = `Please inspect this Telegram sticker${sticker.emoji ? ` (${sticker.emoji})` : ''}.`;
+    await sendPromptToPi(ctx, prompt, [{ type: 'image', data: file.data.toString('base64'), mimeType }]);
+  } catch (error) {
+    await ctx.reply(`Sticker handling failed: ${error instanceof Error ? error.message : String(error)}`, threadParams(session.messageThreadId));
+  }
+});
+
+bot.on('message_reaction', async (ctx) => {
+  if (config.TELEGRAM_REACTION_NOTIFICATIONS === 'off') return;
+  const reaction = ctx.update.message_reaction;
+  if (!reaction?.chat) return;
+  const key = sessionKeyFor(reaction.chat.id, isGroupChatType(reaction.chat.type));
+  const session = sessions.get(key);
+  if (!session) return;
+  const emoji = reaction.new_reaction?.find((item) => item.type === 'emoji')?.emoji;
+  if (!emoji) return;
+  const isOwnMessage = session.botMessageIds.has(reaction.message_id);
+  if (!shouldRecordReaction(config.TELEGRAM_REACTION_NOTIFICATIONS as ReactionMode, { isOwnMessage })) return;
+  session.systemEvents.push(formatReactionNote({ emoji, userId: reaction.user?.id, username: reaction.user?.username, messageId: reaction.message_id, isOwnMessage }));
+});
+
 bot.on('message:voice', async (ctx) => {
   if (!requireAllowed(ctx)) return;
   const session = getOrCreateSession(ctx);
@@ -1204,6 +1307,43 @@ bot.on('message:voice', async (ctx) => {
   }
 });
 
+bot.on('message:audio', async (ctx) => {
+  if (!requireAllowed(ctx)) return;
+  const session = getOrCreateSession(ctx);
+  const audio = ctx.message.audio;
+  if (audio.file_size && audio.file_size > config.MAX_AUDIO_BYTES) {
+    await ctx.reply(`Audio too large (${audio.file_size} bytes). MAX_AUDIO_BYTES=${config.MAX_AUDIO_BYTES}`, threadParams(session.messageThreadId));
+    return;
+  }
+  try {
+    const file = await fetchTelegramFile(audio.file_id, config.MAX_AUDIO_BYTES);
+    const filePath = await saveTelegramMediaFile({ data: file.data, workspaceRoot: config.WORKSPACE_ROOT, fileName: audio.file_name ?? `${audio.file_unique_id}.mp3` });
+    await ctx.reply('🎧 Audio saved.', threadParams(session.messageThreadId));
+    await sendPromptToPi(ctx, mediaSavedPrompt('audio file', filePath, ctx.message.caption?.trim()));
+  } catch (error) {
+    await ctx.reply(`Audio handling failed: ${error instanceof Error ? error.message : String(error)}`, threadParams(session.messageThreadId));
+  }
+});
+
+bot.on('message:video', async (ctx) => {
+  if (!requireAllowed(ctx)) return;
+  const session = getOrCreateSession(ctx);
+  const video = ctx.message.video;
+  if (video.file_size && video.file_size > config.MAX_VIDEO_BYTES) {
+    await ctx.reply(`Video too large (${video.file_size} bytes). MAX_VIDEO_BYTES=${config.MAX_VIDEO_BYTES}`, threadParams(session.messageThreadId));
+    return;
+  }
+  try {
+    const file = await fetchTelegramFile(video.file_id, config.MAX_VIDEO_BYTES);
+    const ext = path.extname(file.filePath ?? '') || '.mp4';
+    const filePath = await saveTelegramMediaFile({ data: file.data, workspaceRoot: config.WORKSPACE_ROOT, fileName: `${video.file_unique_id}${ext}` });
+    await ctx.reply('🎬 Video saved.', threadParams(session.messageThreadId));
+    await sendPromptToPi(ctx, mediaSavedPrompt('video file', filePath, ctx.message.caption?.trim()));
+  } catch (error) {
+    await ctx.reply(`Video handling failed: ${error instanceof Error ? error.message : String(error)}`, threadParams(session.messageThreadId));
+  }
+});
+
 bot.on('message:document', async (ctx) => {
   if (!requireAllowed(ctx)) return;
   const session = getOrCreateSession(ctx);
@@ -1216,15 +1356,16 @@ bot.on('message:document', async (ctx) => {
     const file = await fetchTelegramFile(doc.file_id, config.MAX_DOCUMENT_BYTES);
     const fileName = doc.file_name ?? 'document';
     const ext = path.extname(fileName).toLowerCase();
-    const textExts = new Set(['.txt', '.md', '.json', '.csv', '.log', '.ts', '.js', '.py', '.yaml', '.yml']);
-    if (!textExts.has(ext)) {
-      await ctx.reply(`Unsupported document type '${ext || 'unknown'}'. Supported: ${[...textExts].join(', ')}`, threadParams(session.messageThreadId));
+    if (!isTextDocumentExtension(ext)) {
+      const filePath = await saveTelegramMediaFile({ data: file.data, workspaceRoot: config.WORKSPACE_ROOT, fileName });
+      await ctx.reply(`📎 Document saved at ${filePath}`, threadParams(session.messageThreadId));
+      await sendPromptToPi(ctx, mediaSavedPrompt('document', filePath, ctx.message.caption?.trim()));
       return;
     }
     const content = file.data.toString('utf8');
     const caption = ctx.message.caption?.trim();
     const prompt = [`Please inspect this document: ${fileName}`, '', '```', truncateMiddle(content, 50_000), '```', caption ? `\nUser note: ${caption}` : ''].join('\n');
-    await ctx.reply('📄 Document received.', threadParams(session.messageThreadId));
+    await ctx.reply(`📄 Document received. Supported text types include: ${supportedTextDocumentExtensions().slice(0, 12).join(', ')}...`, threadParams(session.messageThreadId));
     await sendPromptToPi(ctx, prompt);
   } catch (error) {
     await ctx.reply(`Document handling failed: ${error instanceof Error ? error.message : String(error)}`, threadParams(session.messageThreadId));
