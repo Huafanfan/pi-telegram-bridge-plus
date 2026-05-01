@@ -2,6 +2,7 @@
 import { Bot, GrammyError, HttpError, InlineKeyboard, InputFile, type Context } from 'grammy';
 import type { Message, ReactionTypeEmoji } from 'grammy/types';
 import path from 'node:path';
+import http, { type Server } from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { loadConfig, splitArgs } from './config.js';
@@ -66,6 +67,7 @@ const albums = new Map<string, AlbumEntry>();
 const botUsernames = new Set<string>();
 const startedAt = Date.now();
 let idleSweepTimer: NodeJS.Timeout | null = null;
+let healthServer: Server | null = null;
 let shuttingDown = false;
 
 function contextThreadId(ctx: Context): number | undefined {
@@ -479,6 +481,7 @@ async function sendDiagnostics(session: SessionState): Promise<void> {
       typing: config.TELEGRAM_ENABLE_TYPING,
       reactions: config.TELEGRAM_ENABLE_REACTIONS,
       sessionIdleTimeoutMs: config.SESSION_IDLE_TIMEOUT_MS,
+      healthcheck: config.HEALTHCHECK_PORT > 0 ? `${config.HEALTHCHECK_HOST}:${config.HEALTHCHECK_PORT}${config.HEALTHCHECK_PATH}` : 'disabled',
       sendRetries: config.TELEGRAM_SEND_RETRIES,
       proxy: {
         HTTPS_PROXY: envEnabled('HTTPS_PROXY'),
@@ -806,6 +809,51 @@ function startIdleSweep(): void {
   idleSweepTimer.unref?.();
 }
 
+function healthPayload(): Record<string, unknown> {
+  const sessionsList = [...sessions.values()];
+  return {
+    ok: true,
+    transport: 'long_polling',
+    uptimeMs: Date.now() - startedAt,
+    botUsernames: [...botUsernames],
+    activeSessions: sessionsList.length,
+    runningPiSessions: sessionsList.filter((session) => session.pi.isRunning).length,
+    streamingSessions: sessionsList.filter((session) => session.isStreaming).length,
+    bufferedAlbums: albums.size,
+    shuttingDown,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function startHealthcheckServer(): void {
+  if (config.HEALTHCHECK_PORT <= 0 || healthServer) return;
+  const healthPath = config.HEALTHCHECK_PATH.startsWith('/') ? config.HEALTHCHECK_PATH : `/${config.HEALTHCHECK_PATH}`;
+  healthServer = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (req.method !== 'GET' || url.pathname !== healthPath) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'not_found' }));
+      return;
+    }
+    res.writeHead(shuttingDown ? 503 : 200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(healthPayload()));
+  });
+  healthServer.listen(config.HEALTHCHECK_PORT, config.HEALTHCHECK_HOST, () => {
+    console.log(`Healthcheck listening on http://${config.HEALTHCHECK_HOST}:${config.HEALTHCHECK_PORT}${healthPath}`);
+  });
+  healthServer.on('error', (error) => {
+    console.error(`Healthcheck server error: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  healthServer.unref?.();
+}
+
+async function stopHealthcheckServer(): Promise<void> {
+  if (!healthServer) return;
+  const server = healthServer;
+  healthServer = null;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
 async function transcribeVoice(filePath: string): Promise<string> {
   if (!config.VOICE_TRANSCRIBE_CMD.trim()) {
     throw new Error('Voice transcription is not configured. Set VOICE_TRANSCRIBE_CMD.');
@@ -1081,6 +1129,7 @@ async function shutdown(): Promise<void> {
     clearInterval(idleSweepTimer);
     idleSweepTimer = null;
   }
+  await stopHealthcheckServer();
   for (const album of albums.values()) clearTimeout(album.timer);
   albums.clear();
   for (const session of sessions.values()) stopSession(session);
@@ -1114,6 +1163,7 @@ await bot.api.setMyCommands([
 ]).catch((error) => console.warn(`setMyCommands failed: ${error instanceof Error ? error.message : String(error)}`));
 
 startIdleSweep();
+startHealthcheckServer();
 
 console.log(`pi-telegram-bridge-plus started as @${me.username}. Workspace: ${config.WORKSPACE_ROOT}`);
 await bot.start({

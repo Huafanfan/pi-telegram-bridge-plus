@@ -342,7 +342,8 @@ Acceptance criteria:
 - [x] Add owner-only `/diagnostics` for verbose details.
   - Includes bot username, transport mode, uptime, sanitized config, proxy presence, active sessions, buffered albums, current pi state, and per-session error summaries.
 - [ ] Add structured logs with event names and session keys.
-- [ ] Add optional healthcheck command or HTTP endpoint for service managers.
+- [x] Add optional healthcheck command or HTTP endpoint for service managers.
+  - Added optional local `GET /healthz` endpoint enabled by `HEALTHCHECK_PORT`.
 
 Acceptance criteria:
 

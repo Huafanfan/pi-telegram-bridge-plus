@@ -57,6 +57,11 @@ const schema = z.object({
   SESSION_IDLE_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(0),
   SESSION_IDLE_SWEEP_MS: z.coerce.number().int().positive().default(60_000),
 
+  // Optional local healthcheck HTTP endpoint. Disabled by default when port is 0.
+  HEALTHCHECK_HOST: z.string().default('127.0.0.1'),
+  HEALTHCHECK_PORT: z.coerce.number().int().nonnegative().default(0),
+  HEALTHCHECK_PATH: z.string().default('/healthz'),
+
   // Optional command hook. The downloaded voice file path is appended as the last arg.
   // Example: VOICE_TRANSCRIBE_CMD='whisper-cli --model base --file'
   VOICE_TRANSCRIBE_CMD: z.string().default(''),

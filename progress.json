@@ -1,6 +1,6 @@
 {
   "milestone": "post-github-hardening",
-  "updatedAt": "2026-05-01T14:10:00Z",
+  "updatedAt": "2026-05-01T14:25:00Z",
   "completed": [
     "multi-session foundation",
     "group-topic support",
@@ -12,14 +12,10 @@
     "outbound media MVP",
     "diagnostics command",
     "basic tests",
-    "logic-modules-tests"
+    "logic-modules-tests",
+    "healthcheck"
   ],
   "pending": [
-    {
-      "id": "healthcheck",
-      "title": "Optional HTTP healthcheck endpoint",
-      "status": "pending"
-    },
     {
       "id": "webhook-mode",
       "title": "Optional Telegram webhook transport",

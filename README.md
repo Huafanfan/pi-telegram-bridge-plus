@@ -28,6 +28,7 @@ This `plus` variant was created beside the original `pi-telegram-bridge` so the 
 - Optional typing indicators and reactions.
 - Telegram send retry/backoff for flood control and transient send failures.
 - Owner-only `/diagnostics` for transport/session/pi/proxy troubleshooting.
+- Optional local HTTP healthcheck endpoint for service managers.
 - Basic HTML fallback and Telegram message splitting.
 
 ## Requirements
@@ -114,6 +115,8 @@ Set `SESSION_IDLE_TIMEOUT_MS` to automatically close idle, non-streaming session
 
 Telegram sends are retried for flood-control and transient failures. Tune this with `TELEGRAM_SEND_RETRIES` and `TELEGRAM_SEND_RETRY_BASE_MS`.
 
+Set `HEALTHCHECK_PORT` to enable a local HTTP healthcheck endpoint for service managers, e.g. `HEALTHCHECK_PORT=8787` exposes `GET /healthz` on `127.0.0.1` by default.
+
 ## Media
 
 ### Photos and albums
@@ -190,7 +193,7 @@ Recommended:
 - No dynamic pairing yet.
 - Outbound file/media delivery currently supports local files under `WORKSPACE_ROOT` via `MEDIA:/absolute/path` markers; structured pi RPC media events are not supported yet.
 - No per-tool approval UI yet; this depends on pi RPC approval event support.
-- `/diagnostics` is Telegram-command based; there is no HTTP healthcheck endpoint yet.
+- Healthcheck is local HTTP status only; it does not expose Telegram control APIs.
 - Voice transcription requires a user-provided local command.
 
 ## Development
