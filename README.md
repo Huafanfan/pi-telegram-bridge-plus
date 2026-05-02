@@ -211,10 +211,17 @@ If pi replies with a line like this, the bridge will try to send the referenced 
 MEDIA:/absolute/path/under/workspace/report.pdf
 ```
 
+For generated images, the bridge also recognizes common tool output such as:
+
+```text
+Image generated successfully.
+Path: /Users/you/Pictures/pi-generated-images/image.png
+```
+
 Rules:
 
 - Paths must be absolute.
-- Files must exist under `WORKSPACE_ROOT`.
+- Files must exist under `WORKSPACE_ROOT`, `~/Pictures/pi-generated-images`, or a comma-separated directory listed in `OUTBOUND_MEDIA_ALLOWED_ROOTS`.
 - File size must be at or below `MAX_OUTBOUND_FILE_BYTES`.
 - Image extensions are sent as photos, audio/video extensions as media, and everything else as documents.
 - Invalid markers are reported back to the chat without exposing bridge configuration.

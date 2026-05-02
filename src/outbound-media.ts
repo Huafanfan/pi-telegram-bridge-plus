@@ -12,6 +12,8 @@ export type OutboundMediaFile = {
 };
 
 const MARKER_PATTERN = /^\s*MEDIA:(.+?)\s*$/gim;
+const GENERATED_IMAGE_PATH_PATTERN = /(?:^|\b)Path:\s*(.+?\.(?:png|jpe?g|webp|gif))(?=\s|$)/gim;
+const ABSOLUTE_IMAGE_PATH_PATTERN = /[`'"]?(\/[^\n\r\t`'"]+?\.(?:png|jpe?g|webp|gif))[`'"]?/gim;
 
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
 const AUDIO_EXTS = new Set(['.mp3', '.m4a', '.aac', '.flac', '.wav']);
@@ -47,6 +49,17 @@ export function extractMediaMarkers(text: string): string[] {
   return [...new Set(markers)];
 }
 
+export function extractGeneratedImagePathMarkers(text: string): string[] {
+  const markers: string[] = [];
+  for (const pattern of [GENERATED_IMAGE_PATH_PATTERN, ABSOLUTE_IMAGE_PATH_PATTERN]) {
+    for (const match of text.matchAll(pattern)) {
+      const value = match[1]?.trim().replace(/^[`'"]|[`'"]$/g, '');
+      if (value) markers.push(value);
+    }
+  }
+  return [...new Set(markers)];
+}
+
 export function stripMediaMarkers(text: string): string {
   return text.replace(MARKER_PATTERN, '').replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -62,8 +75,8 @@ export function resolveOutboundMediaFiles(options: {
   const files: OutboundMediaFile[] = [];
   const errors: string[] = [];
 
-  for (const marker of extractMediaMarkers(options.text)) {
-    const raw = marker.replace(/^['"]|['"]$/g, '');
+  for (const marker of [...extractMediaMarkers(options.text), ...extractGeneratedImagePathMarkers(options.text)]) {
+    const raw = marker.replace(/^[`'"]|[`'"]$/g, '');
     if (!path.isAbsolute(raw)) {
       errors.push(`MEDIA path must be absolute: ${marker}`);
       continue;

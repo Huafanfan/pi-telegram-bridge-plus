@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { extractMediaMarkers, mediaKindForPath, resolveOutboundMediaFiles, stripMediaMarkers } from './outbound-media.js';
+import { extractGeneratedImagePathMarkers, extractMediaMarkers, mediaKindForPath, resolveOutboundMediaFiles, stripMediaMarkers } from './outbound-media.js';
 
 describe('outbound media helpers', () => {
   it('extracts and deduplicates MEDIA markers', () => {
@@ -13,6 +13,11 @@ describe('outbound media helpers', () => {
 
   it('strips MEDIA markers from visible text', () => {
     assert.equal(stripMediaMarkers('hello\nMEDIA:/tmp/a.png\n\nworld'), 'hello\n\nworld');
+  });
+
+  it('extracts generated image path markers', () => {
+    const text = 'Image generated successfully.\nPath: /Users/me/Pictures/pi-generated-images/a.png\n`/Users/me/Pictures/pi-generated-images/b.webp`';
+    assert.deepEqual(extractGeneratedImagePathMarkers(text), ['/Users/me/Pictures/pi-generated-images/a.png', '/Users/me/Pictures/pi-generated-images/b.webp']);
   });
 
   it('classifies common media extensions', () => {
@@ -35,6 +40,23 @@ describe('outbound media helpers', () => {
       assert.equal(result.files[0]?.kind, 'document');
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves generated image paths under extra allowed roots', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pi-bridge-media-'));
+    const images = mkdtempSync(path.join(tmpdir(), 'pi-generated-images-'));
+    try {
+      const file = path.join(images, 'generated.png');
+      writeFileSync(file, 'png');
+      const result = resolveOutboundMediaFiles({ text: `Image generated successfully.\nPath: ${file}`, workspaceRoot: root, maxBytes: 100, extraAllowedRoots: [images] });
+      assert.deepEqual(result.errors, []);
+      assert.equal(result.files.length, 1);
+      assert.equal(result.files[0]?.path, file);
+      assert.equal(result.files[0]?.kind, 'photo');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(images, { recursive: true, force: true });
     }
   });
 

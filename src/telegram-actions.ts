@@ -52,9 +52,9 @@ function normalizeAction(value: unknown): TelegramAction | undefined {
   return undefined;
 }
 
-export function resolveTelegramActionFile(action: TelegramAction, workspaceRoot: string, maxBytes: number): { file?: OutboundMediaFile; error?: string } {
+export function resolveTelegramActionFile(action: TelegramAction, workspaceRoot: string, maxBytes: number, extraAllowedRoots?: string[]): { file?: OutboundMediaFile; error?: string } {
   if (!('path' in action)) return {};
-  const { files, errors } = resolveOutboundMediaFiles({ text: `MEDIA:${action.path}`, workspaceRoot, maxBytes });
+  const { files, errors } = resolveOutboundMediaFiles({ text: `MEDIA:${action.path}`, workspaceRoot, maxBytes, extraAllowedRoots });
   if (errors.length) return { error: errors.join('; ') };
   const file = files[0];
   if (!file) return { error: `No file resolved for telegram-action path: ${action.path}` };

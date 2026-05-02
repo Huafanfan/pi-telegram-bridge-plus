@@ -55,6 +55,7 @@ const schema = z.object({
   MAX_VOICE_BYTES: z.coerce.number().int().positive().default(20_000_000),
   MAX_ALBUM_IMAGES: z.coerce.number().int().positive().default(10),
   MAX_OUTBOUND_FILE_BYTES: z.coerce.number().int().positive().default(20_000_000),
+  OUTBOUND_MEDIA_ALLOWED_ROOTS: z.string().default(''),
   MAX_VIDEO_BYTES: z.coerce.number().int().positive().default(50_000_000),
   MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(30_000_000),
 
@@ -94,6 +95,7 @@ export type Config = z.infer<typeof schema> & {
   approverUserIds: Set<number>;
   mentionPatterns: RegExp[];
   piArgs: string[];
+  outboundMediaAllowedRoots: string[];
 };
 
 function splitCsvNumbers(value: string): Set<number> {
@@ -108,6 +110,13 @@ function splitCsvNumbers(value: string): Set<number> {
 export function splitArgs(value: string): string[] {
   // Minimal shell-like split for common flags. Users needing complex quoting should prefer dedicated env vars.
   return value.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((part) => part.replace(/^["']|["']$/g, '')) ?? [];
+}
+
+function splitCsvStrings(value: string): string[] {
+  return value
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
 }
 
 function compileMentionPatterns(value: string): RegExp[] {
@@ -164,5 +173,6 @@ export function loadConfig(): Config {
     approverUserIds,
     mentionPatterns: compileMentionPatterns(parsed.TELEGRAM_MENTION_PATTERNS),
     piArgs,
+    outboundMediaAllowedRoots: splitCsvStrings(parsed.OUTBOUND_MEDIA_ALLOWED_ROOTS),
   };
 }

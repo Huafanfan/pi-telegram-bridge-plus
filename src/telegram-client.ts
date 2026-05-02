@@ -24,7 +24,10 @@ export function telegramFetch(config: Pick<TelegramClientConfig, 'TELEGRAM_PROXY
   const proxy = config.TELEGRAM_PROXY.trim();
   if (!proxy) return fetch;
   const dispatcher = new ProxyAgent(proxy);
-  return ((input, init) => (undiciFetch as unknown as typeof fetch)(input, { ...(init as FetchInit), dispatcher } as unknown as RequestInit)) as typeof fetch;
+  return ((input, init) => {
+    const { signal: _signal, ...rest } = (init ?? {}) as FetchInit;
+    return (undiciFetch as unknown as typeof fetch)(input, { ...rest, dispatcher, duplex: 'half' } as unknown as RequestInit);
+  }) as typeof fetch;
 }
 
 export function telegramClientOptions(config: TelegramClientConfig): ApiClientOptions {

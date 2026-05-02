@@ -3,6 +3,7 @@ import { Bot, GrammyError, HttpError, InlineKeyboard, InputFile, type Context } 
 import type { Message, ReactionTypeEmoji } from 'grammy/types';
 import path from 'node:path';
 import fs from 'node:fs';
+import { homedir } from 'node:os';
 import http, { type Server } from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -489,26 +490,61 @@ function messageText(message: unknown): string {
     .trim();
 }
 
+async function sendMediaWithRetry(method: string, send: () => Promise<unknown>): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= config.TELEGRAM_SEND_RETRIES; attempt += 1) {
+    try {
+      await send();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= config.TELEGRAM_SEND_RETRIES || !isRetryableTelegramSendError(error)) break;
+      const retryAfter = telegramRetryAfterMs(error);
+      const backoff = retryAfter ?? config.TELEGRAM_SEND_RETRY_BASE_MS * 2 ** attempt;
+      console.warn(`${method} failed; retrying in ${backoff}ms`, error);
+      await sleep(backoff + Math.floor(Math.random() * 250));
+    }
+  }
+  throw lastError;
+}
+
 async function sendOutboundMediaFile(session: SessionState, file: OutboundMediaFile, customCaption?: string): Promise<void> {
   const caption = customCaption ?? `📎 ${file.fileName}`;
   const baseOptions = threadParams(session.messageThreadId);
   switch (file.kind) {
     case 'photo':
-      await bot.api.sendPhoto(session.chatId, new InputFile(file.path), { caption, ...baseOptions });
+      try {
+        await sendMediaWithRetry('sendPhoto', () => bot.api.sendPhoto(session.chatId, new InputFile(file.path), { caption, ...baseOptions }));
+      } catch (error) {
+        if (!isRetryableTelegramSendError(error)) throw error;
+        console.warn(`sendPhoto failed for ${file.path}; falling back to sendDocument`, error);
+        await sendMediaWithRetry('sendDocument', () => bot.api.sendDocument(session.chatId, new InputFile(file.path), { caption, ...baseOptions }));
+      }
       return;
     case 'audio':
-      await bot.api.sendAudio(session.chatId, new InputFile(file.path), { caption, ...baseOptions });
+      await sendMediaWithRetry('sendAudio', () => bot.api.sendAudio(session.chatId, new InputFile(file.path), { caption, ...baseOptions }));
       return;
     case 'voice':
-      await bot.api.sendVoice(session.chatId, new InputFile(file.path), { caption, ...baseOptions });
+      await sendMediaWithRetry('sendVoice', () => bot.api.sendVoice(session.chatId, new InputFile(file.path), { caption, ...baseOptions }));
       return;
     case 'video':
-      await bot.api.sendVideo(session.chatId, new InputFile(file.path), { caption, ...baseOptions });
+      await sendMediaWithRetry('sendVideo', () => bot.api.sendVideo(session.chatId, new InputFile(file.path), { caption, ...baseOptions }));
       return;
     case 'document':
-      await bot.api.sendDocument(session.chatId, new InputFile(file.path), { caption, ...baseOptions });
+      await sendMediaWithRetry('sendDocument', () => bot.api.sendDocument(session.chatId, new InputFile(file.path), { caption, ...baseOptions }));
       return;
   }
+}
+
+function defaultOutboundMediaRoots(): string[] {
+  return [
+    path.join(homedir(), 'Pictures', 'pi-generated-images'),
+    path.join(config.WORKSPACE_ROOT, 'Pictures', 'pi-generated-images'),
+  ];
+}
+
+function outboundMediaAllowedRoots(): string[] {
+  return [...defaultOutboundMediaRoots(), ...config.outboundMediaAllowedRoots];
 }
 
 async function executeTelegramAction(session: SessionState, action: TelegramAction, ctx?: Context): Promise<void> {
@@ -529,7 +565,7 @@ async function executeTelegramAction(session: SessionState, action: TelegramActi
     await sendSession(session, markdownToTelegramHtml(action.text), keyboard);
     return;
   }
-  const resolved = resolveTelegramActionFile(action, config.WORKSPACE_ROOT, config.MAX_OUTBOUND_FILE_BYTES);
+  const resolved = resolveTelegramActionFile(action, config.WORKSPACE_ROOT, config.MAX_OUTBOUND_FILE_BYTES, outboundMediaAllowedRoots());
   if (resolved.error || !resolved.file) throw new Error(resolved.error ?? 'Could not resolve telegram-action file');
   await sendOutboundMediaFile(session, { ...resolved.file, kind: action.type.replace('send_', '') as OutboundMediaFile['kind'] }, action.caption);
 }
@@ -554,6 +590,7 @@ async function sendOutboundMedia(session: SessionState, text: string): Promise<s
     text,
     workspaceRoot: config.WORKSPACE_ROOT,
     maxBytes: config.MAX_OUTBOUND_FILE_BYTES,
+    extraAllowedRoots: outboundMediaAllowedRoots(),
   });
 
   for (const file of files) {
